@@ -28,6 +28,7 @@ object MusicScannerUtil {
             MediaStore.Audio.Media.TITLE,
             MediaStore.Audio.Media.ARTIST,
             MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.DATE_ADDED,
             MediaStore.Audio.Media.ALBUM_ID,
             MediaStore.Audio.Media.DISPLAY_NAME,
             MediaStore.Audio.Media.MIME_TYPE
@@ -55,6 +56,7 @@ object MusicScannerUtil {
                 val titleColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
                 val artistColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
                 val durationColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
+                val dateAddedColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
                 val albumIdColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
                 val displayNameColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
                 val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
@@ -82,6 +84,7 @@ object MusicScannerUtil {
                     val rawArtist = cursor.getString(artistColumn).orEmpty().trim()
                     val albumId = cursor.getLong(albumIdColumn)
                     val duration = cursor.getLong(durationColumn).coerceAtLeast(0L)
+                    val dateAdded = cursor.getLong(dateAddedColumn).coerceAtLeast(0L)
                     val contentUri = ContentUris.withAppendedId(collection, id)
                     val albumArtUri = if (albumId > 0) {
                         ContentUris.withAppendedId(ALBUM_ART_BASE_URI, albumId)
@@ -98,6 +101,7 @@ object MusicScannerUtil {
                             .takeUnless { it.isBlank() || it.equals("<unknown>", ignoreCase = true) }
                             ?: context.getString(R.string.unknown_artist),
                         durationMs = duration,
+                        dateAddedSeconds = dateAdded,
                         contentUri = contentUri,
                         albumId = albumId,
                         albumArtUri = albumArtUri,

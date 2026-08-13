@@ -1,8 +1,11 @@
 package com.ahad.lyricsoverlay
 
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.Typeface
 import android.media.MediaMetadataRetriever
 import android.os.Handler
 import android.os.Looper
@@ -10,9 +13,11 @@ import android.util.LruCache
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import android.widget.ImageView
-import androidx.core.content.ContextCompat
+import android.widget.TextView
+import androidx.core.graphics.ColorUtils
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.color.MaterialColors
 import java.util.concurrent.Executors
 
 class MusicListAdapter(
@@ -24,9 +29,18 @@ class MusicListAdapter(
     private val artworkExecutor = Executors.newFixedThreadPool(2)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var playingSongId: Long? = null
+    private var configuration = AppPreferences.snapshot()
+    private var selectedTypeface: Typeface = AppUi.typeface(
+        android.view.View(context),
+        configuration.appFont
+    )
 
     private val artworkCache = object : LruCache<Long, Bitmap>(cacheSizeKb()) {
         override fun sizeOf(key: Long, value: Bitmap): Int = value.byteCount / 1024
+    }
+
+    init {
+        setHasStableIds(true)
     }
 
     fun submitList(newSongs: List<Song>) {
@@ -35,12 +49,23 @@ class MusicListAdapter(
         notifyDataSetChanged()
     }
 
+    fun updateConfiguration(snapshot: CustomizationSnapshot) {
+        if (configuration == snapshot) return
+        configuration = snapshot
+        selectedTypeface = AppUi.typeface(android.view.View(context), snapshot.appFont)
+        notifyDataSetChanged()
+    }
+
     fun setPlayingSong(songId: Long?) {
         val previousId = playingSongId
         playingSongId = songId
         if (previousId == songId) return
-        songs.indexOfFirst { it.id == previousId }.takeIf { it >= 0 }?.let(::notifyItemChanged)
-        songs.indexOfFirst { it.id == songId }.takeIf { it >= 0 }?.let(::notifyItemChanged)
+        songs.indexOfFirst { it.id == previousId }
+            .takeIf { it >= 0 }
+            ?.let(::notifyItemChanged)
+        songs.indexOfFirst { it.id == songId }
+            .takeIf { it >= 0 }
+            ?.let(::notifyItemChanged)
     }
 
     fun loadArtworkInto(imageView: ImageView, song: Song) {
@@ -68,51 +93,100 @@ class MusicListAdapter(
         mainHandler.removeCallbacksAndMessages(null)
     }
 
+    override fun getItemId(position: Int): Long = songs[position].id
+
+    override fun getItemViewType(position: Int): Int {
+        val modeOffset = if (configuration.layoutMode == LibraryLayoutMode.GRID) 3 else 0
+        return modeOffset + configuration.itemStyle.ordinal
+    }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): SongViewHolder {
-        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_song, parent, false)
+        val layout = when (viewType) {
+            VIEW_LIST_FLAT -> R.layout.item_song_list_flat
+            VIEW_LIST_ROUNDED -> R.layout.item_song_list_card
+            VIEW_LIST_COMPACT -> R.layout.item_song_list_compact
+            VIEW_GRID_FLAT -> R.layout.item_song_grid_flat
+            VIEW_GRID_ROUNDED -> R.layout.item_song_grid_card
+            VIEW_GRID_COMPACT -> R.layout.item_song_grid_compact
+            else -> error("Unsupported song view type: $viewType")
+        }
+        val view = LayoutInflater.from(parent.context).inflate(layout, parent, false)
         return SongViewHolder(view as MaterialCardView)
     }
 
     override fun onBindViewHolder(holder: SongViewHolder, position: Int) {
-        holder.bind(songs[position], position)
+        holder.bind(songs[position])
     }
 
     override fun getItemCount(): Int = songs.size
 
     inner class SongViewHolder(private val card: MaterialCardView) : RecyclerView.ViewHolder(card) {
         private val albumArt: ImageView = card.findViewById(R.id.albumArt)
-        private val title: android.widget.TextView = card.findViewById(R.id.songTitle)
-        private val artist: android.widget.TextView = card.findViewById(R.id.songArtist)
-        private val duration: android.widget.TextView = card.findViewById(R.id.songDuration)
+        private val title: TextView = card.findViewById(R.id.songTitle)
+        private val artist: TextView = card.findViewById(R.id.songArtist)
+        private val duration: TextView? = card.findViewById(R.id.songDuration)
 
-        fun bind(song: Song, adapterPosition: Int) {
+        fun bind(song: Song) {
             title.text = song.title
             artist.text = song.artist
-            duration.text = MusicScannerUtil.formatDuration(song.durationMs)
+            duration?.text = MusicScannerUtil.formatDuration(song.durationMs)
+            title.setTypeface(selectedTypeface, Typeface.BOLD)
+            artist.setTypeface(selectedTypeface, Typeface.NORMAL)
+            duration?.setTypeface(selectedTypeface, Typeface.NORMAL)
             loadArtworkInto(albumArt, song)
 
-            val isPlaying = song.id == playingSongId
-            card.strokeWidth = if (isPlaying) dp(1.5f) else dp(1f)
-            card.setStrokeColor(
-                ContextCompat.getColor(
-                    context,
-                    if (isPlaying) R.color.primary else R.color.divider
-                )
-            )
-            card.setCardBackgroundColor(
-                ContextCompat.getColor(
-                    context,
-                    if (isPlaying) R.color.surface_elevated else R.color.surface
-                )
-            )
-            card.setOnClickListener {
-                val currentPosition = bindingAdapterPosition
-                if (currentPosition != RecyclerView.NO_POSITION) {
-                    onSongClicked(currentPosition)
-                } else {
-                    onSongClicked(adapterPosition)
+            if (configuration.layoutMode == LibraryLayoutMode.GRID) {
+                albumArt.post {
+                    if (albumArt.width > 0 && albumArt.layoutParams.height != albumArt.width) {
+                        albumArt.layoutParams = albumArt.layoutParams.apply { height = albumArt.width }
+                    }
                 }
             }
+
+            applyCardAppearance(song.id == playingSongId)
+            card.setOnClickListener {
+                val position = bindingAdapterPosition
+                if (position != RecyclerView.NO_POSITION) onSongClicked(position)
+            }
+        }
+
+        private fun applyCardAppearance(selected: Boolean) {
+            val accent = configuration.accentColor
+            val surface = MaterialColors.getColor(
+                card,
+                com.google.android.material.R.attr.colorSurface,
+                Color.TRANSPARENT
+            )
+            val normalBackground = if (configuration.itemStyle == LibraryItemStyle.FLAT) {
+                Color.TRANSPARENT
+            } else {
+                surface
+            }
+            val selectedBackground = ColorUtils.blendARGB(surface, accent, 0.18f)
+            card.setCardBackgroundColor(if (selected) selectedBackground else normalBackground)
+            card.setStrokeColor(
+                if (selected) accent else MaterialColors.getColor(
+                    card,
+                    com.google.android.material.R.attr.colorOutline,
+                    ColorUtils.setAlphaComponent(accent, 45)
+                )
+            )
+            card.strokeWidth = when {
+                selected -> dp(2f)
+                configuration.itemStyle == LibraryItemStyle.FLAT -> 0
+                else -> dp(1f)
+            }
+            card.cardElevation = when (configuration.itemStyle) {
+                LibraryItemStyle.FLAT -> 0f
+                LibraryItemStyle.ROUNDED -> dpFloat(5f)
+                LibraryItemStyle.COMPACT -> dpFloat(1f)
+            }
+            card.radius = when (configuration.itemStyle) {
+                LibraryItemStyle.FLAT -> dpFloat(10f)
+                LibraryItemStyle.ROUNDED -> dpFloat(18f)
+                LibraryItemStyle.COMPACT -> dpFloat(8f)
+            }
+            card.rippleColor = ColorStateList.valueOf(ColorUtils.setAlphaComponent(accent, 55))
         }
     }
 
@@ -125,7 +199,7 @@ class MusicListAdapter(
             val retriever = MediaMetadataRetriever()
             try {
                 retriever.setDataSource(context, song.contentUri)
-                retriever.embeddedPicture?.let { decodeByteArray(it) }
+                retriever.embeddedPicture?.let(::decodeByteArray)
             } finally {
                 retriever.release()
             }
@@ -138,9 +212,11 @@ class MusicListAdapter(
         val uri = android.net.Uri.parse(uriString)
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            context.contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, bounds)
+            }
             val options = BitmapFactory.Options().apply {
-                inSampleSize = calculateSampleSize(bounds.outWidth, bounds.outHeight, 300)
+                inSampleSize = calculateSampleSize(bounds.outWidth, bounds.outHeight, 360)
             }
             context.contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, options)
@@ -154,15 +230,15 @@ class MusicListAdapter(
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         val options = BitmapFactory.Options().apply {
-            inSampleSize = calculateSampleSize(bounds.outWidth, bounds.outHeight, 300)
+            inSampleSize = calculateSampleSize(bounds.outWidth, bounds.outHeight, 360)
         }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }
 
     private fun calculateSampleSize(width: Int, height: Int, target: Int): Int {
         var sample = 1
-        var halfWidth = width / 2
-        var halfHeight = height / 2
+        val halfWidth = width / 2
+        val halfHeight = height / 2
         while (halfWidth / sample >= target && halfHeight / sample >= target) {
             sample *= 2
         }
@@ -170,21 +246,33 @@ class MusicListAdapter(
     }
 
     private fun showBitmap(imageView: ImageView, bitmap: Bitmap) {
+        imageView.imageTintList = null
         imageView.setPadding(0, 0, 0, 0)
         imageView.scaleType = ImageView.ScaleType.CENTER_CROP
         imageView.setImageBitmap(bitmap)
     }
 
     private fun showPlaceholder(imageView: ImageView) {
-        val padding = dp(13f)
+        val padding = if (configuration.layoutMode == LibraryLayoutMode.GRID) dp(28f) else dp(11f)
         imageView.setPadding(padding, padding, padding, padding)
         imageView.scaleType = ImageView.ScaleType.CENTER_INSIDE
+        imageView.imageTintList = ColorStateList.valueOf(configuration.accentColor)
         imageView.setImageResource(R.drawable.ic_album)
     }
 
-    private fun dp(value: Float): Int = (value * context.resources.displayMetrics.density).toInt()
+    private fun dp(value: Float): Int =
+        (value * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+
+    private fun dpFloat(value: Float): Float = value * context.resources.displayMetrics.density
 
     companion object {
+        private const val VIEW_LIST_FLAT = 0
+        private const val VIEW_LIST_ROUNDED = 1
+        private const val VIEW_LIST_COMPACT = 2
+        private const val VIEW_GRID_FLAT = 3
+        private const val VIEW_GRID_ROUNDED = 4
+        private const val VIEW_GRID_COMPACT = 5
+
         private fun cacheSizeKb(): Int {
             val maxMemoryKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt()
             return (maxMemoryKb / 16).coerceAtLeast(4 * 1024)

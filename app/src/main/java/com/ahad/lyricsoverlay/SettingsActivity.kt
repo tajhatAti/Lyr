@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
+import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -19,12 +20,20 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import com.google.android.material.card.MaterialCardView
 
-class SettingsActivity : AppCompatActivity() {
+class SettingsActivity : AppCompatActivity(), AppPreferenceListener {
 
-    private val preferences by lazy {
-        getSharedPreferences(OverlayService.PREFS_NAME, Context.MODE_PRIVATE)
-    }
+    private lateinit var settingsRoot: View
+    private lateinit var themeModeSpinner: Spinner
+    private lateinit var gridColumnsSpinner: Spinner
+    private lateinit var itemStyleSpinner: Spinner
+    private lateinit var sortOrderSpinner: Spinner
+    private lateinit var appFontSpinner: Spinner
+    private lateinit var customColorPicker: ColorPickerView
+    private lateinit var customColorHex: TextView
+    private lateinit var applyCustomColorButton: Button
+    private lateinit var accentCard: MaterialCardView
 
     private lateinit var permissionStatus: TextView
     private lateinit var permissionButton: Button
@@ -34,33 +43,76 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var fontStyleSpinner: Spinner
     private lateinit var animationSpinner: Spinner
 
-    private var selectedColor: Int = OverlayService.DEFAULT_TEXT_COLOR
-    private val colorViews = linkedMapOf<Int, View>()
+    private var customization = AppPreferences.snapshot()
+    private var selectedCustomColor = customization.accentColor
+    private var selectedOverlayColor = AppPreferences.overlayTextColor()
+    private val accentViews = linkedMapOf<Int, View>()
+    private val overlayColorViews = linkedMapOf<Int, View>()
+    private val spinnerAdapters = mutableListOf<ThemedSpinnerAdapter>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
 
-        window.statusBarColor = ContextCompat.getColor(this, R.color.background)
-        window.navigationBarColor = ContextCompat.getColor(this, R.color.background)
-
+        customization = AppPreferences.snapshot()
         bindViews()
+        setupLibraryCustomization()
+        setupAccentColors()
         setupPermissionControls()
-        setupFontSize()
-        setupFontStyle()
-        setupColorPalette()
-        setupAnimationStyle()
+        setupOverlayFontSize()
+        setupOverlayFontStyle()
+        setupOverlayColorPalette()
+        setupOverlayAnimationStyle()
         setupResetPosition()
-        applyPreview()
+        refreshAllControls()
+        AppUi.apply(this, settingsRoot, customization)
+        AppPreferences.registerListener(this)
     }
 
     override fun onResume() {
         super.onResume()
         refreshPermissionState()
+        AppUi.apply(this, settingsRoot, AppPreferences.snapshot())
+    }
+
+    override fun onDestroy() {
+        AppPreferences.unregisterListener(this)
+        super.onDestroy()
+    }
+
+    override fun onAppPreferenceChanged(snapshot: CustomizationSnapshot, changedKey: String) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            val oldTheme = customization.themeMode
+            customization = snapshot
+            if (changedKey == AppPreferences.KEY_THEME_MODE && oldTheme != snapshot.themeMode) {
+                LyrApplication.applyThemeMode(snapshot.themeMode)
+                return@runOnUiThread
+            }
+
+            if (changedKey.startsWith("overlay_")) {
+                refreshOverlayControls(changedKey)
+            } else {
+                refreshLibraryControls()
+                AppUi.apply(this, settingsRoot, snapshot)
+                spinnerAdapters.forEach { adapter -> adapter.notifyDataSetChanged() }
+            }
+        }
     }
 
     private fun bindViews() {
+        settingsRoot = findViewById(R.id.settingsRoot)
         findViewById<View>(R.id.backButton).setOnClickListener { finish() }
+        themeModeSpinner = findViewById(R.id.themeModeSpinner)
+        gridColumnsSpinner = findViewById(R.id.gridColumnsSpinner)
+        itemStyleSpinner = findViewById(R.id.itemStyleSpinner)
+        sortOrderSpinner = findViewById(R.id.sortOrderSpinner)
+        appFontSpinner = findViewById(R.id.appFontSpinner)
+        customColorPicker = findViewById(R.id.customColorPicker)
+        customColorHex = findViewById(R.id.customColorHex)
+        applyCustomColorButton = findViewById(R.id.applyCustomColorButton)
+        accentCard = findViewById(R.id.accentCard)
+
         permissionStatus = findViewById(R.id.overlayPermissionStatus)
         permissionButton = findViewById(R.id.overlayPermissionButton)
         previewText = findViewById(R.id.previewText)
@@ -68,6 +120,89 @@ class SettingsActivity : AppCompatActivity() {
         fontSizeSeekBar = findViewById(R.id.fontSizeSeekBar)
         fontStyleSpinner = findViewById(R.id.fontStyleSpinner)
         animationSpinner = findViewById(R.id.animationSpinner)
+    }
+
+    private fun setupLibraryCustomization() {
+        val themeValues = listOf(AppThemeMode.SYSTEM, AppThemeMode.LIGHT, AppThemeMode.DARK)
+        setSpinner(
+            themeModeSpinner,
+            listOf(getString(R.string.theme_system), getString(R.string.theme_light), getString(R.string.theme_dark)),
+            themeValues.indexOf(customization.themeMode)
+        ) { position -> AppPreferences.setThemeMode(themeValues[position]) }
+
+        val columnValues = listOf(2, 3)
+        setSpinner(
+            gridColumnsSpinner,
+            listOf(getString(R.string.two_columns), getString(R.string.three_columns)),
+            columnValues.indexOf(customization.gridColumns)
+        ) { position -> AppPreferences.setGridColumns(columnValues[position]) }
+
+        val styleValues = listOf(
+            LibraryItemStyle.FLAT,
+            LibraryItemStyle.ROUNDED,
+            LibraryItemStyle.COMPACT
+        )
+        setSpinner(
+            itemStyleSpinner,
+            listOf(
+                getString(R.string.style_flat),
+                getString(R.string.style_rounded),
+                getString(R.string.style_compact)
+            ),
+            styleValues.indexOf(customization.itemStyle)
+        ) { position -> AppPreferences.setItemStyle(styleValues[position]) }
+
+        val sortValues = listOf(
+            LibrarySortOrder.TITLE,
+            LibrarySortOrder.ARTIST,
+            LibrarySortOrder.DATE_ADDED,
+            LibrarySortOrder.DURATION
+        )
+        setSpinner(
+            sortOrderSpinner,
+            listOf(
+                getString(R.string.sort_title),
+                getString(R.string.sort_artist),
+                getString(R.string.sort_date_added),
+                getString(R.string.sort_duration)
+            ),
+            sortValues.indexOf(customization.sortOrder)
+        ) { position -> AppPreferences.setSortOrder(sortValues[position]) }
+
+        val fonts = AppFont.entries
+        setSpinner(
+            appFontSpinner,
+            fonts.map(AppFont::displayName),
+            fonts.indexOf(customization.appFont)
+        ) { position -> AppPreferences.setAppFont(fonts[position]) }
+    }
+
+    private fun setupAccentColors() {
+        accentViews[Color.rgb(124, 77, 255)] = findViewById(R.id.accentPurple)
+        accentViews[Color.rgb(63, 81, 181)] = findViewById(R.id.accentIndigo)
+        accentViews[Color.rgb(30, 112, 230)] = findViewById(R.id.accentBlue)
+        accentViews[Color.rgb(0, 151, 190)] = findViewById(R.id.accentCyan)
+        accentViews[Color.rgb(22, 148, 93)] = findViewById(R.id.accentGreen)
+        accentViews[Color.rgb(230, 109, 0)] = findViewById(R.id.accentOrange)
+        accentViews[Color.rgb(215, 56, 122)] = findViewById(R.id.accentPink)
+        accentViews[Color.rgb(211, 54, 54)] = findViewById(R.id.accentRed)
+
+        accentViews.forEach { (color, view) ->
+            view.isClickable = true
+            view.isFocusable = true
+            view.setOnClickListener { AppPreferences.setAccentColor(color) }
+        }
+
+        selectedCustomColor = customization.accentColor
+        customColorPicker.setColor(selectedCustomColor)
+        updateCustomColorReadout(selectedCustomColor)
+        customColorPicker.setOnColorChangedListener { color ->
+            selectedCustomColor = color
+            updateCustomColorReadout(color)
+        }
+        applyCustomColorButton.setOnClickListener {
+            AppPreferences.setAccentColor(selectedCustomColor)
+        }
     }
 
     private fun setupPermissionControls() {
@@ -88,24 +223,20 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupFontSize() {
-        val initialSize = preferences.getFloat(
-            OverlayService.PREF_FONT_SIZE,
-            OverlayService.DEFAULT_FONT_SIZE
-        ).coerceIn(OverlayService.MIN_FONT_SIZE, OverlayService.MAX_FONT_SIZE)
-        fontSizeSeekBar.max = (OverlayService.MAX_FONT_SIZE - OverlayService.MIN_FONT_SIZE).toInt()
-        fontSizeSeekBar.progress = (initialSize - OverlayService.MIN_FONT_SIZE).toInt()
-        fontSizeValue.text = "${initialSize.toInt()} sp"
+    private fun setupOverlayFontSize() {
+        val initialSize = AppPreferences.overlayFontSize()
+        fontSizeSeekBar.max = (
+            AppPreferences.MAX_OVERLAY_FONT_SIZE - AppPreferences.MIN_OVERLAY_FONT_SIZE
+        ).toInt()
+        fontSizeSeekBar.progress = (initialSize - AppPreferences.MIN_OVERLAY_FONT_SIZE).toInt()
+        fontSizeValue.text = getString(R.string.font_size_value, initialSize.toInt())
 
         fontSizeSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val size = OverlayService.MIN_FONT_SIZE + progress
-                fontSizeValue.text = "$size sp"
+                val size = AppPreferences.MIN_OVERLAY_FONT_SIZE + progress
+                fontSizeValue.text = getString(R.string.font_size_value, size.toInt())
                 previewText.textSize = size
-                if (fromUser) {
-                    preferences.edit().putFloat(OverlayService.PREF_FONT_SIZE, size).apply()
-                    notifyOverlayChanged()
-                }
+                if (fromUser) AppPreferences.setOverlayFontSize(size)
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -113,131 +244,213 @@ class SettingsActivity : AppCompatActivity() {
         })
     }
 
-    private fun setupFontStyle() {
-        val labels = listOf("Bold Sans", "Regular Sans", "Serif", "Monospace")
+    private fun setupOverlayFontStyle() {
         val values = listOf(
-            OverlayService.FONT_BOLD,
-            OverlayService.FONT_REGULAR,
-            OverlayService.FONT_SERIF,
-            OverlayService.FONT_MONOSPACE
+            AppPreferences.OVERLAY_FONT_BOLD,
+            AppPreferences.OVERLAY_FONT_REGULAR,
+            AppPreferences.OVERLAY_FONT_SERIF,
+            AppPreferences.OVERLAY_FONT_MONOSPACE
         )
-        fontStyleSpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_item,
-            labels
-        ).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
-
-        val saved = preferences.getString(OverlayService.PREF_FONT_STYLE, OverlayService.FONT_BOLD)
-        fontStyleSpinner.setSelection(values.indexOf(saved).coerceAtLeast(0), false)
-        fontStyleSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                preferences.edit().putString(OverlayService.PREF_FONT_STYLE, values[position]).apply()
-                applyPreview()
-                notifyOverlayChanged()
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-        }
+        setSpinner(
+            fontStyleSpinner,
+            listOf("Bold Sans", "Regular Sans", "Serif", "Monospace"),
+            values.indexOf(AppPreferences.overlayFontStyle()).coerceAtLeast(0)
+        ) { position -> AppPreferences.setOverlayFontStyle(values[position]) }
     }
 
-    private fun setupColorPalette() {
-        colorViews[Color.WHITE] = findViewById(R.id.colorWhite)
-        colorViews[Color.rgb(190, 167, 255)] = findViewById(R.id.colorPurple)
-        colorViews[Color.rgb(112, 216, 255)] = findViewById(R.id.colorBlue)
-        colorViews[Color.rgb(255, 145, 199)] = findViewById(R.id.colorPink)
-        colorViews[Color.rgb(111, 227, 180)] = findViewById(R.id.colorGreen)
+    private fun setupOverlayColorPalette() {
+        overlayColorViews[Color.WHITE] = findViewById(R.id.colorWhite)
+        overlayColorViews[Color.rgb(190, 167, 255)] = findViewById(R.id.colorPurple)
+        overlayColorViews[Color.rgb(112, 216, 255)] = findViewById(R.id.colorBlue)
+        overlayColorViews[Color.rgb(255, 145, 199)] = findViewById(R.id.colorPink)
+        overlayColorViews[Color.rgb(111, 227, 180)] = findViewById(R.id.colorGreen)
 
-        selectedColor = preferences.getInt(
-            OverlayService.PREF_TEXT_COLOR,
-            OverlayService.DEFAULT_TEXT_COLOR
-        )
-        colorViews.forEach { (color, view) ->
+        selectedOverlayColor = AppPreferences.overlayTextColor()
+        overlayColorViews.forEach { (color, view) ->
             view.isClickable = true
             view.isFocusable = true
-            view.setOnClickListener {
-                selectedColor = color
-                preferences.edit().putInt(OverlayService.PREF_TEXT_COLOR, color).apply()
-                updateColorPalette()
-                applyPreview()
-                notifyOverlayChanged()
-            }
+            view.setOnClickListener { AppPreferences.setOverlayTextColor(color) }
         }
-        updateColorPalette()
+        updateOverlayColorPalette()
     }
 
-    private fun setupAnimationStyle() {
-        val labels = listOf("Fade", "Fade + scale", "Slide")
+    private fun setupOverlayAnimationStyle() {
         val values = listOf(
-            OverlayService.ANIMATION_FADE,
-            OverlayService.ANIMATION_SCALE,
-            OverlayService.ANIMATION_SLIDE
+            AppPreferences.OVERLAY_ANIMATION_FADE,
+            AppPreferences.OVERLAY_ANIMATION_SCALE,
+            AppPreferences.OVERLAY_ANIMATION_SLIDE
         )
-        animationSpinner.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_item,
-            labels
-        ).apply {
-            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        }
-
-        val saved = preferences.getString(
-            OverlayService.PREF_ANIMATION_STYLE,
-            OverlayService.ANIMATION_SCALE
-        )
-        animationSpinner.setSelection(values.indexOf(saved).coerceAtLeast(0), false)
-        animationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                preferences.edit()
-                    .putString(OverlayService.PREF_ANIMATION_STYLE, values[position])
-                    .apply()
-                notifyOverlayChanged()
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        setSpinner(
+            animationSpinner,
+            listOf("Fade", "Fade + scale", "Slide"),
+            values.indexOf(AppPreferences.overlayAnimation()).coerceAtLeast(0)
+        ) { position ->
+            AppPreferences.setOverlayAnimation(values[position])
+            animateOverlayPreview(values[position])
         }
     }
 
     private fun setupResetPosition() {
         findViewById<View>(R.id.resetPositionButton).setOnClickListener {
-            preferences.edit()
-                .remove(OverlayService.PREF_POSITION_X)
-                .remove(OverlayService.PREF_POSITION_Y)
-                .apply()
-            notifyOverlayChanged()
-            Toast.makeText(this, "Overlay position reset", Toast.LENGTH_SHORT).show()
+            AppPreferences.resetOverlayPosition()
+            Toast.makeText(this, R.string.overlay_position_reset, Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun updateColorPalette() {
-        val selectedStroke = ContextCompat.getColor(this, R.color.primary_light)
-        colorViews.forEach { (color, view) ->
-            view.background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(color)
-                setStroke(dp(if (color == selectedColor) 3 else 1), if (color == selectedColor) selectedStroke else Color.DKGRAY)
+    private fun setSpinner(
+        spinner: Spinner,
+        labels: List<String>,
+        selectedPosition: Int,
+        onSelected: (Int) -> Unit
+    ) {
+        val adapter = ThemedSpinnerAdapter(this, labels)
+        spinnerAdapters += adapter
+        spinner.adapter = adapter
+        spinner.setSelection(selectedPosition.coerceAtLeast(0), false)
+        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                onSelected(position)
             }
-            view.alpha = if (color == selectedColor) 1f else 0.68f
-            view.scaleX = if (color == selectedColor) 1.08f else 1f
-            view.scaleY = if (color == selectedColor) 1.08f else 1f
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
     }
 
-    private fun applyPreview() {
-        val size = preferences.getFloat(
-            OverlayService.PREF_FONT_SIZE,
-            OverlayService.DEFAULT_FONT_SIZE
+    private fun refreshAllControls() {
+        refreshLibraryControls()
+        refreshOverlayControls("initial")
+        refreshPermissionState()
+    }
+
+    private fun refreshLibraryControls() {
+        themeModeSpinner.setSelection(
+            listOf(AppThemeMode.SYSTEM, AppThemeMode.LIGHT, AppThemeMode.DARK)
+                .indexOf(customization.themeMode),
+            false
         )
-        val style = preferences.getString(OverlayService.PREF_FONT_STYLE, OverlayService.FONT_BOLD)
-        previewText.textSize = size
-        previewText.setTextColor(selectedColor)
-        previewText.typeface = when (style) {
-            OverlayService.FONT_REGULAR -> Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-            OverlayService.FONT_SERIF -> Typeface.create(Typeface.SERIF, Typeface.BOLD)
-            OverlayService.FONT_MONOSPACE -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        gridColumnsSpinner.setSelection(if (customization.gridColumns == 3) 1 else 0, false)
+        itemStyleSpinner.setSelection(customization.itemStyle.ordinal, false)
+        sortOrderSpinner.setSelection(customization.sortOrder.ordinal, false)
+        appFontSpinner.setSelection(AppFont.entries.indexOf(customization.appFont), false)
+        updateAccentPalette()
+        if (customColorPicker.selectedColor() != customization.accentColor &&
+            customization.accentColor in accentViews.keys
+        ) {
+            selectedCustomColor = customization.accentColor
+            customColorPicker.setColor(selectedCustomColor)
+            updateCustomColorReadout(selectedCustomColor)
+        }
+        accentCard.setStrokeColor(customization.accentColor)
+    }
+
+    private fun refreshOverlayControls(changedKey: String) {
+        val size = AppPreferences.overlayFontSize()
+        if (!fontSizeSeekBar.isPressed) {
+            fontSizeSeekBar.progress = (size - AppPreferences.MIN_OVERLAY_FONT_SIZE).toInt()
+        }
+        fontSizeValue.text = getString(R.string.font_size_value, size.toInt())
+        fontStyleSpinner.setSelection(
+            listOf(
+                AppPreferences.OVERLAY_FONT_BOLD,
+                AppPreferences.OVERLAY_FONT_REGULAR,
+                AppPreferences.OVERLAY_FONT_SERIF,
+                AppPreferences.OVERLAY_FONT_MONOSPACE
+            ).indexOf(AppPreferences.overlayFontStyle()).coerceAtLeast(0),
+            false
+        )
+        animationSpinner.setSelection(
+            listOf(
+                AppPreferences.OVERLAY_ANIMATION_FADE,
+                AppPreferences.OVERLAY_ANIMATION_SCALE,
+                AppPreferences.OVERLAY_ANIMATION_SLIDE
+            ).indexOf(AppPreferences.overlayAnimation()).coerceAtLeast(0),
+            false
+        )
+        selectedOverlayColor = AppPreferences.overlayTextColor()
+        updateOverlayColorPalette()
+        applyOverlayPreview()
+        if (changedKey == AppPreferences.KEY_OVERLAY_ANIMATION) {
+            animateOverlayPreview(AppPreferences.overlayAnimation())
+        }
+    }
+
+    private fun updateAccentPalette() {
+        val selectedStroke = customization.accentColor
+        accentViews.forEach { (color, view) ->
+            view.background = circleDrawable(
+                color,
+                if (color == customization.accentColor) 4 else 1,
+                if (color == customization.accentColor) selectedStroke else Color.GRAY
+            )
+            view.alpha = if (color == customization.accentColor) 1f else 0.72f
+            view.scaleX = if (color == customization.accentColor) 1.1f else 1f
+            view.scaleY = if (color == customization.accentColor) 1.1f else 1f
+        }
+    }
+
+    private fun updateOverlayColorPalette() {
+        overlayColorViews.forEach { (color, view) ->
+            view.background = circleDrawable(
+                color,
+                if (color == selectedOverlayColor) 3 else 1,
+                if (color == selectedOverlayColor) customization.accentColor else Color.DKGRAY
+            )
+            view.alpha = if (color == selectedOverlayColor) 1f else 0.68f
+            view.scaleX = if (color == selectedOverlayColor) 1.08f else 1f
+            view.scaleY = if (color == selectedOverlayColor) 1.08f else 1f
+        }
+    }
+
+    private fun updateCustomColorReadout(color: Int) {
+        customColorHex.text = String.format(
+            LocaleHolder.LOCALE,
+            "#%02X%02X%02X",
+            Color.red(color),
+            Color.green(color),
+            Color.blue(color)
+        )
+        applyCustomColorButton.backgroundTintList = android.content.res.ColorStateList.valueOf(color)
+        applyCustomColorButton.setTextColor(AppUi.contrastTextColor(color))
+    }
+
+    private fun applyOverlayPreview() {
+        previewText.textSize = AppPreferences.overlayFontSize()
+        previewText.setTextColor(AppPreferences.overlayTextColor())
+        previewText.typeface = when (AppPreferences.overlayFontStyle()) {
+            AppPreferences.OVERLAY_FONT_REGULAR -> Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            AppPreferences.OVERLAY_FONT_SERIF -> Typeface.create(Typeface.SERIF, Typeface.BOLD)
+            AppPreferences.OVERLAY_FONT_MONOSPACE -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             else -> Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
+    }
+
+    private fun animateOverlayPreview(style: String) {
+        previewText.animate().cancel()
+        previewText.alpha = 0.25f
+        when (style) {
+            AppPreferences.OVERLAY_ANIMATION_SLIDE -> {
+                previewText.translationY = dp(12).toFloat()
+                previewText.scaleX = 0.97f
+                previewText.scaleY = 0.97f
+            }
+            AppPreferences.OVERLAY_ANIMATION_FADE -> {
+                previewText.translationY = 0f
+                previewText.scaleX = 1f
+                previewText.scaleY = 1f
+            }
+            else -> {
+                previewText.translationY = 0f
+                previewText.scaleX = 0.86f
+                previewText.scaleY = 0.86f
+            }
+        }
+        previewText.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(330L)
+            .start()
     }
 
     private fun refreshPermissionState() {
@@ -253,14 +466,42 @@ class SettingsActivity : AppCompatActivity() {
             if (granted) R.string.overlay_permission_granted
             else R.string.open_overlay_permission
         )
-        permissionButton.alpha = if (granted) 0.75f else 1f
+        permissionButton.alpha = if (granted) 0.82f else 1f
     }
 
-    private fun notifyOverlayChanged() {
-        sendBroadcast(
-            Intent(OverlayService.ACTION_SETTINGS_CHANGED).setPackage(packageName)
-        )
-    }
+    private fun circleDrawable(color: Int, strokeDp: Int, strokeColor: Int): GradientDrawable =
+        GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+            setStroke(dp(strokeDp), strokeColor)
+        }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private inner class ThemedSpinnerAdapter(
+        context: Context,
+        labels: List<String>
+    ) : ArrayAdapter<String>(context, android.R.layout.simple_spinner_item, labels) {
+        init {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+            style(super.getView(position, convertView, parent))
+
+        override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View =
+            style(super.getDropDownView(position, convertView, parent))
+
+        private fun style(view: View): View {
+            if (view is TextView) {
+                view.setTypeface(AppUi.typeface(view, customization.appFont), Typeface.NORMAL)
+                view.setTextColor(ContextCompat.getColor(this@SettingsActivity, R.color.text_primary))
+            }
+            return view
+        }
+    }
+
+    private object LocaleHolder {
+        val LOCALE: java.util.Locale = java.util.Locale.US
+    }
 }

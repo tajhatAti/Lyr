@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/mainRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/background">
@@ -35,6 +36,7 @@
                     android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/librarySummary"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
@@ -42,6 +44,15 @@
                     android:textColor="@color/text_secondary"
                     android:textSize="13sp" />
             </LinearLayout>
+
+            <ImageButton
+                android:id="@+id/layoutModeButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/switch_to_grid"
+                android:padding="11dp"
+                android:src="@drawable/ic_grid_view" />
 
             <ImageButton
                 android:id="@+id/settingsButton"
@@ -61,6 +72,10 @@
             android:background="@drawable/bg_permission_banner"
             android:gravity="center_vertical"
             android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="8dp"
             android:visibility="gone">
 
             <TextView
@@ -74,15 +89,14 @@
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/grantPermissionButton"
-                style="@style/Widget.MaterialComponents.Button.TextButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:minWidth="0dp"
-                android:text="@string/grant_permission"
-                android:textColor="@color/primary_light" />
+                android:text="@string/grant_permission" />
         </LinearLayout>
 
         <FrameLayout
+            android:id="@+id/libraryContentContainer"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_marginTop="12dp"
@@ -94,8 +108,7 @@
                 android:layout_height="match_parent"
                 android:clipToPadding="false"
                 android:paddingTop="4dp"
-                android:paddingBottom="132dp"
-                app:layoutManager="androidx.recyclerview.widget.LinearLayoutManager" />
+                android:paddingBottom="132dp" />
 
             <TextView
                 android:id="@+id/emptyMessage"

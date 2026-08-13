@@ -3,10 +3,7 @@ package com.ahad.lyricsoverlay
 import android.animation.ArgbEvaluator
 import android.animation.ValueAnimator
 import android.app.Service
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -20,9 +17,8 @@ import android.view.View
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
 import android.widget.TextView
-import androidx.core.content.ContextCompat
 
-class OverlayService : Service() {
+class OverlayService : Service(), AppPreferenceListener {
 
     inner class LocalBinder : Binder() {
         fun getService(): OverlayService = this@OverlayService
@@ -30,7 +26,6 @@ class OverlayService : Service() {
 
     private val binder = LocalBinder()
     private lateinit var windowManager: WindowManager
-    private lateinit var preferences: android.content.SharedPreferences
 
     private var lyricTextView: TextView? = null
     private var layoutParams: WindowManager.LayoutParams? = null
@@ -44,27 +39,11 @@ class OverlayService : Service() {
     private var preferredColor = DEFAULT_TEXT_COLOR
     private var animationStyle = ANIMATION_SCALE
 
-    private val settingsReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == ACTION_SETTINGS_CHANGED) {
-                loadPreferences()
-                applyTextAppearance()
-                applySavedPosition()
-            }
-        }
-    }
-
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        preferences = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         loadPreferences()
-        ContextCompat.registerReceiver(
-            this,
-            settingsReceiver,
-            IntentFilter(ACTION_SETTINGS_CHANGED),
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
+        AppPreferences.registerListener(this)
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -72,13 +51,23 @@ class OverlayService : Service() {
     override fun onDestroy() {
         animationGeneration++
         colorAnimator?.cancel()
-        try {
-            unregisterReceiver(settingsReceiver)
-        } catch (_: IllegalArgumentException) {
-            // Receiver was already unregistered.
-        }
+        AppPreferences.unregisterListener(this)
         removeOverlay()
         super.onDestroy()
+    }
+
+    override fun onAppPreferenceChanged(
+        snapshot: CustomizationSnapshot,
+        changedKey: String
+    ) {
+        if (!changedKey.startsWith("overlay_")) return
+        loadPreferences()
+        applyTextAppearance()
+        if (changedKey == AppPreferences.KEY_OVERLAY_X ||
+            changedKey == AppPreferences.KEY_OVERLAY_Y
+        ) {
+            applySavedPosition()
+        }
     }
 
     fun setLyrics(rawLrc: String?) {
@@ -293,10 +282,7 @@ class OverlayService : Service() {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (params != null) {
-                        preferences.edit()
-                            .putInt(PREF_POSITION_X, params.x)
-                            .putInt(PREF_POSITION_Y, params.y)
-                            .apply()
+                        AppPreferences.setOverlayPosition(params.x, params.y)
                     }
                     true
                 }
@@ -306,12 +292,10 @@ class OverlayService : Service() {
     }
 
     private fun loadPreferences() {
-        fontSizeSp = preferences.getFloat(PREF_FONT_SIZE, DEFAULT_FONT_SIZE)
-            .coerceIn(MIN_FONT_SIZE, MAX_FONT_SIZE)
-        fontStyle = preferences.getString(PREF_FONT_STYLE, FONT_BOLD) ?: FONT_BOLD
-        preferredColor = preferences.getInt(PREF_TEXT_COLOR, DEFAULT_TEXT_COLOR)
-        animationStyle = preferences.getString(PREF_ANIMATION_STYLE, ANIMATION_SCALE)
-            ?: ANIMATION_SCALE
+        fontSizeSp = AppPreferences.overlayFontSize()
+        fontStyle = AppPreferences.overlayFontStyle()
+        preferredColor = AppPreferences.overlayTextColor()
+        animationStyle = AppPreferences.overlayAnimation()
     }
 
     private fun applyTextAppearance(textView: TextView? = lyricTextView) {
@@ -338,12 +322,10 @@ class OverlayService : Service() {
         }
     }
 
-    private fun savedX(): Int = preferences.getInt(PREF_POSITION_X, dp(24f))
+    private fun savedX(): Int = AppPreferences.overlayX() ?: dp(24f)
 
-    private fun savedY(): Int = preferences.getInt(
-        PREF_POSITION_Y,
-        (resources.displayMetrics.heightPixels * 0.68f).toInt()
-    )
+    private fun savedY(): Int = AppPreferences.overlayY()
+        ?: (resources.displayMetrics.heightPixels * 0.68f).toInt()
 
     private fun colorVariantForLine(baseColor: Int, index: Int): Int {
         val hsv = FloatArray(3)
@@ -362,28 +344,18 @@ class OverlayService : Service() {
     private fun dp(value: Float): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
-        const val PREFS_NAME = "lyrics_overlay_settings"
-        const val PREF_FONT_SIZE = "font_size"
-        const val PREF_FONT_STYLE = "font_style"
-        const val PREF_TEXT_COLOR = "text_color"
-        const val PREF_ANIMATION_STYLE = "animation_style"
-        const val PREF_POSITION_X = "position_x"
-        const val PREF_POSITION_Y = "position_y"
+        const val FONT_REGULAR = AppPreferences.OVERLAY_FONT_REGULAR
+        const val FONT_BOLD = AppPreferences.OVERLAY_FONT_BOLD
+        const val FONT_SERIF = AppPreferences.OVERLAY_FONT_SERIF
+        const val FONT_MONOSPACE = AppPreferences.OVERLAY_FONT_MONOSPACE
 
-        const val FONT_REGULAR = "regular"
-        const val FONT_BOLD = "bold"
-        const val FONT_SERIF = "serif"
-        const val FONT_MONOSPACE = "monospace"
+        const val ANIMATION_FADE = AppPreferences.OVERLAY_ANIMATION_FADE
+        const val ANIMATION_SCALE = AppPreferences.OVERLAY_ANIMATION_SCALE
+        const val ANIMATION_SLIDE = AppPreferences.OVERLAY_ANIMATION_SLIDE
 
-        const val ANIMATION_FADE = "fade"
-        const val ANIMATION_SCALE = "scale"
-        const val ANIMATION_SLIDE = "slide"
-
-        const val ACTION_SETTINGS_CHANGED = "com.ahad.lyricsoverlay.SETTINGS_CHANGED"
-
-        const val DEFAULT_FONT_SIZE = 24f
-        const val MIN_FONT_SIZE = 14f
-        const val MAX_FONT_SIZE = 42f
-        val DEFAULT_TEXT_COLOR: Int = Color.WHITE
+        const val DEFAULT_FONT_SIZE = AppPreferences.DEFAULT_OVERLAY_FONT_SIZE
+        const val MIN_FONT_SIZE = AppPreferences.MIN_OVERLAY_FONT_SIZE
+        const val MAX_FONT_SIZE = AppPreferences.MAX_OVERLAY_FONT_SIZE
+        val DEFAULT_TEXT_COLOR: Int = AppPreferences.DEFAULT_OVERLAY_COLOR
     }
 }

@@ -2,7 +2,9 @@
     <string name="app_name">Lyr Music</string>
     <string name="library_title">Your music</string>
     <string name="library_subtitle">Local songs with floating synced lyrics</string>
-    <string name="settings">Lyrics overlay settings</string>
+    <string name="library_summary">%1$d songs · %2$s · %3$s</string>
+    <string name="settings">Settings</string>
+    <string name="back">Back</string>
     <string name="notification_channel_name">Music playback</string>
     <string name="notification_channel_description">Playback controls for the current song</string>
     <string name="permission_needed">Music permission is needed to show your local songs.</string>
@@ -15,14 +17,55 @@
     <string name="play">Play</string>
     <string name="pause">Pause</string>
     <string name="next">Next</string>
+    <string name="preparing_player">Preparing the music player…</string>
+    <string name="unable_to_start_playback">Unable to start playback. Please try again.</string>
+
+    <string name="switch_to_grid">Switch to grid view</string>
+    <string name="switch_to_list">Switch to list view</string>
+    <string name="list_view">List</string>
+    <string name="grid_view_columns">%1$d-column grid</string>
+    <string name="sort_title_short">Title A–Z</string>
+    <string name="sort_artist_short">Artist A–Z</string>
+    <string name="sort_date_short">Newest first</string>
+    <string name="sort_duration_short">Longest first</string>
+
+    <string name="library_appearance">Library appearance</string>
+    <string name="library_appearance_description">Customize the library layout, colors, item design, sorting and typography. Every change applies live and is restored next time.</string>
+    <string name="theme_mode">Theme</string>
+    <string name="theme_system">Follow system</string>
+    <string name="theme_light">Light</string>
+    <string name="theme_dark">Dark</string>
+    <string name="grid_columns">Grid columns</string>
+    <string name="two_columns">2 columns</string>
+    <string name="three_columns">3 columns</string>
+    <string name="accent_color">Accent color</string>
+    <string name="accent_color_description">Used for the playing song, player controls, seek bar and app buttons.</string>
+    <string name="custom_color">Custom accent</string>
+    <string name="custom_color_picker">Custom saturation, brightness and hue color picker</string>
+    <string name="use_custom_color">Use custom color</string>
+    <string name="item_style">Song item style</string>
+    <string name="style_flat">Flat minimal</string>
+    <string name="style_rounded">Rounded elevated card</string>
+    <string name="style_compact">Compact dense</string>
+    <string name="sort_order">Sort library</string>
+    <string name="sort_title">Title A–Z</string>
+    <string name="sort_artist">Artist A–Z</string>
+    <string name="sort_date_added">Date added — newest first</string>
+    <string name="sort_duration">Duration — longest first</string>
+    <string name="app_font">App font</string>
+
+    <string name="overlay_settings">Floating lyric overlay</string>
     <string name="overlay_permission_title">Display over other apps</string>
     <string name="overlay_permission_description">Allow this once so synced lyrics can float above other apps.</string>
     <string name="open_overlay_permission">Allow floating lyrics</string>
     <string name="overlay_permission_granted">Floating lyrics permission granted</string>
+    <string name="preview_lyric">Your synced lyric appears like this</string>
     <string name="font_size">Font size</string>
+    <string name="font_size_value">%1$d sp</string>
     <string name="font_style">Font style</string>
     <string name="text_color">Text color</string>
     <string name="animation_style">Animation style</string>
     <string name="reset_position">Reset overlay position</string>
+    <string name="overlay_position_reset">Overlay position reset</string>
     <string name="settings_hint">Changes are saved automatically and applied live.</string>
 </resources>
