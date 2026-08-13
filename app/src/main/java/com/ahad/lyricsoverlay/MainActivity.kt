@@ -319,13 +319,13 @@ class MainActivity : AppCompatActivity(),
 
     private fun sortAndDisplaySongs(preserveAnchor: Boolean) {
         val anchor = if (preserveAnchor) captureScrollAnchor() else null
-        val titleComparator = compareBy<Song>(String.CASE_INSENSITIVE_ORDER) { it.title }
+        val titleComparator = compareBy<Song> { it.title.lowercase(Locale.ROOT) }
             .thenBy { it.id }
         val sorted = when (customization.sortOrder) {
             LibrarySortOrder.TITLE -> scannedSongs.sortedWith(titleComparator)
             LibrarySortOrder.ARTIST -> scannedSongs.sortedWith(
-                compareBy<Song>(String.CASE_INSENSITIVE_ORDER) { it.artist }
-                    .thenBy(String.CASE_INSENSITIVE_ORDER) { it.title }
+                compareBy<Song> { it.artist.lowercase(Locale.ROOT) }
+                    .thenBy { it.title.lowercase(Locale.ROOT) }
                     .thenBy { it.id }
             )
             LibrarySortOrder.DATE_ADDED -> scannedSongs.sortedWith(
