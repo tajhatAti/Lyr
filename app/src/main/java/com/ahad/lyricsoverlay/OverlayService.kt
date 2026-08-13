@@ -138,7 +138,7 @@ class OverlayService : Service() {
             .setInterpolator(AccelerateDecelerateInterpolator())
 
         when (animationStyle) {
-            ANIMATION_SLIDE -> outgoing.translationY(-dp(8f)).scaleX(0.97f).scaleY(0.97f)
+            ANIMATION_SLIDE -> outgoing.translationY(-dp(8f).toFloat()).scaleX(0.97f).scaleY(0.97f)
             ANIMATION_FADE -> outgoing.scaleX(0.97f).scaleY(0.97f)
             else -> outgoing.scaleX(0.88f).scaleY(0.88f)
         }
