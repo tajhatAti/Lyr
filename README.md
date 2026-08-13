@@ -1,61 +1,86 @@
-# Lyrics Overlay (Android)
+# Lyr — Local Music Player with Floating Synced Lyrics
 
-`com.ahad.lyricsoverlay` package-এর একটি native Kotlin Android app। অন্য app খোলা থাকলেও এটি draggable floating window-এ user-provided lyrics দেখায়।
+Lyr is a native Android music player that scans music stored on the device, keeps playing through a foreground service, fetches time-synced lyrics from LRCLIB, and displays the current lyric above other apps as a fully transparent floating overlay.
 
 ## Features
 
-- `WindowManager` + `TYPE_APPLICATION_OVERLAY` (Android 8.0+)
-- Android 7.0/7.1-এর জন্য `TYPE_PHONE` fallback, কারণ `TYPE_APPLICATION_OVERLAY` API 26-এ যোগ হয়েছে
-- `SYSTEM_ALERT_WINDOW` settings flow
-- Background operation-এর জন্য foreground service ও persistent notification
-- Android 14-এর `specialUse` foreground-service declaration
-- প্রতি line change-এ animated color, fade ও scale transition
-- Draggable overlay, previous/next, pause/resume এবং close controls
-- Plain lyrics এবং LRC timestamp-যুক্ত lines গ্রহণ করে (timestamp বাদ দিয়ে দেখায়)
-- `minSdk 24`, `targetSdk 34`, `compileSdk 34`
-- GitHub Actions থেকে installable debug APK artifact
+- Native Kotlin app with XML layouts (no Jetpack Compose)
+- Dark, polished local music library with album artwork, artist, duration, rounded cards, ripple feedback, and current-track highlighting
+- MediaStore scanning for MP3, M4A, WAV, and FLAC files
+- Correct scoped-storage permissions:
+  - Android 13+: `READ_MEDIA_AUDIO`
+  - Android 12 and below: `READ_EXTERNAL_STORAGE`
+- Persistent mini-player with previous, animated play/pause, next, album artwork, and seek control
+- Background playback with `PlayerService`, `MediaPlayer`, audio focus handling, and becoming-noisy protection
+- MediaSession notification and lock-screen previous/play-pause/next controls
+- Time-synced lyrics with this fallback order:
+  1. App's local lyrics cache
+  2. LRCLIB public API search by title and artist
+  3. Same-name local `.lrc` file when Android storage access allows it
+  4. Silent no-lyrics fallback
+- Floating `TYPE_APPLICATION_OVERLAY` lyric text with no card or background
+- Draggable lyrics with persisted X/Y position
+- Fade, scale, and slide lyric animations plus animated color transitions
+- Separate settings screen with live preview, font size, font presets, color palette, animation choice, overlay permission shortcut, and position reset
+- Graceful handling for denied permissions, unavailable artwork, missing lyrics, network failures, and unreadable files
 
-> এই project Spotify/Musixmatch-এর private lyrics database বা playback API ব্যবহার করে না। Main screen-এ দেওয়া lyrics নির্ধারিত interval অনুযায়ী overlay-তে দেখায়।
+## Requirements
 
-## দরকারি ফাইল
+- Android 7.0 (API 24) or newer
+- Android SDK 34 for building
+- Java 17
+- An Android device or emulator containing supported local audio files
 
-- `app/src/main/java/com/ahad/lyricsoverlay/MainActivity.kt` — permission ও input screen
-- `app/src/main/java/com/ahad/lyricsoverlay/LyricsOverlayService.kt` — foreground service, overlay ও animations
-- `app/src/main/AndroidManifest.xml` — permissions/service declarations
-- `.github/workflows/build-apk.yml` — GitHub Actions APK build
+The application ID/package is `com.ahad.lyricsoverlay`.
 
-## Local build
-
-Java 17 এবং Android SDK 34 প্রয়োজন।
+## Build locally
 
 ```bash
 ./gradlew assembleDebug
 ```
 
-APK পাওয়া যাবে:
+The debug APK is generated at:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## GitHub Actions দিয়ে APK
+## Build with GitHub Actions
 
-1. GitHub repository-এর **Actions** tab খুলুন।
-2. **Build Android APK** workflow নির্বাচন করুন।
-3. **Run workflow** চাপুন (অথবা push করলে নিজে থেকেই চলবে)।
-4. কাজ শেষ হলে run-এর **Artifacts** section থেকে `lyrics-overlay-debug-apk` download করুন।
-5. ZIP extract করে `app-debug.apk` Android device-এ install করুন।
+This repository includes `.github/workflows/build-apk.yml`.
 
-Debug APK install করতে signing secret লাগে না। Play Store/release distribution-এর জন্য আলাদা release keystore নিরাপদ GitHub Secrets-এ রাখতে হবে; repository-তে keystore বা password commit করবেন না।
+1. Open the repository on GitHub.
+2. Click **Actions**.
+3. Open the latest **Build Android APK** run.
+4. Wait until every build step has a green check mark.
+5. Scroll to **Artifacts** and download **lyrics-overlay-debug-apk**.
+6. Extract the downloaded ZIP and install `app-debug.apk` on the Android device.
 
-## ব্যবহার
+Android may ask you to allow installation from the browser or file manager used to open the APK.
 
-1. App install করে খুলুন।
-2. **Overlay permission দিন** চাপুন এবং “Display over other apps” allow করুন।
-3. Lyrics paste করুন এবং প্রতি line-এর interval দিন।
-4. **Overlay চালু** চাপুন। Android 13+ হলে notification permission prompt-ও আসতে পারে।
-5. অন্য app খুলুন; floating card স্ক্রিনের উপর থাকবে। Card-এর header ধরে drag করা যাবে।
+## First run
 
-## Security note
+1. Open Lyr and allow access to music/audio files.
+2. On Android 13+, allow notifications so playback controls can be shown normally.
+3. Tap a song to start playback.
+4. Open the settings button in the top-right corner.
+5. Tap **Allow over other apps**, enable Lyr in Android Settings, and return to Lyr.
+6. Adjust lyric font, size, color, and animation if desired.
+7. Drag the lyric text anywhere on screen; its position is saved automatically.
 
-এই Android project বানানোর আগে repository-তে hard-coded credentials-সহ পুরোনো scripts ছিল। Working tree থেকে সেগুলো সরানো হয়েছে, কিন্তু Git history থেকে file delete করলেই কোনো প্রকাশিত credential নিরাপদ হয় না। সংশ্লিষ্ট credentials অবিলম্বে revoke/rotate করুন এবং প্রয়োজন হলে repository history আলাদাভাবে rewrite করুন।
+Lyrics are downloaded only when a track needs them. Successful synced lyrics are cached in the app's private storage for future offline playback.
+
+## Architecture
+
+- `MainActivity` — permissions, MediaStore library, song cards, and mini-player UI
+- `PlayerService` — foreground playback, queue, MediaSession, notification, audio focus, and lyric timing
+- `OverlayService` — transparent draggable lyric overlay and animations
+- `SettingsActivity` — persisted/live-applied overlay appearance settings
+- `MusicScannerUtil` — local MediaStore audio scanning
+- `LyricsRepository` — LRCLIB, cache, and local LRC fallback
+- `LrcParser` — timestamp parsing and current-line lookup
+- `MusicListAdapter` — song cards and asynchronous album-art decoding
+
+## Privacy and networking
+
+Lyr does not upload audio files. For lyric lookup, it sends the current song title, artist, and duration as query parameters to the public LRCLIB service. Cached lyrics and preferences remain in the app's private local storage.

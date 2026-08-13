@@ -1,70 +1,111 @@
 package com.ahad.lyricsoverlay
 
 import android.Manifest
-import android.app.Activity
-import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
-import android.text.InputType
-import android.view.Gravity
+import android.os.IBinder
 import android.view.View
-import android.view.ViewGroup
-import android.widget.Button
-import android.widget.EditText
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.Space
+import android.widget.ImageButton
+import android.widget.ImageView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.card.MaterialCardView
+import java.util.concurrent.Executors
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity(), PlayerService.PlayerListener {
 
-    private lateinit var statusText: TextView
-    private lateinit var statusCard: LinearLayout
-    private lateinit var permissionButton: Button
-    private lateinit var startButton: Button
-    private lateinit var lyricsInput: EditText
-    private lateinit var intervalInput: EditText
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var emptyMessage: TextView
+    private lateinit var permissionBanner: View
+    private lateinit var permissionMessage: TextView
+    private lateinit var adapter: MusicListAdapter
 
-    private val preferences by lazy {
-        getSharedPreferences(LyricsOverlayService.PREFS_NAME, Context.MODE_PRIVATE)
+    private lateinit var miniPlayer: MaterialCardView
+    private lateinit var miniAlbumArt: ImageView
+    private lateinit var miniSongTitle: TextView
+    private lateinit var miniSongArtist: TextView
+    private lateinit var playPauseButton: ImageButton
+    private lateinit var seekBar: SeekBar
+
+    private val scannerExecutor = Executors.newSingleThreadExecutor()
+    private val songs = mutableListOf<Song>()
+    private var playerService: PlayerService? = null
+    private var serviceBound = false
+    private var pendingSongPosition: Int? = null
+    private var userSeeking = false
+    private var latestDurationMs = 0L
+    private var displayedSongId: Long? = null
+    private var displayedPlayingState: Boolean? = null
+
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            playerService = (binder as? PlayerService.LocalBinder)?.getService()
+            serviceBound = playerService != null
+            playerService?.setListener(this@MainActivity)
+            pendingSongPosition?.let { position ->
+                pendingSongPosition = null
+                playSong(position)
+            }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            serviceBound = false
+            playerService = null
+        }
     }
-
-    private var startAfterOverlayPermission = false
-    private var startAfterNotificationPermission = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
 
-        window.statusBarColor = COLOR_BACKGROUND
-        window.navigationBarColor = COLOR_BACKGROUND
-        buildScreen()
-        restoreEditorState()
+        window.statusBarColor = ContextCompat.getColor(this, R.color.background)
+        window.navigationBarColor = ContextCompat.getColor(this, R.color.background)
+
+        bindViews()
+        setupRecyclerView()
+        setupPlayerControls()
+        setupTopControls()
+        requestMissingPermissions()
+
+        if (hasAudioPermission()) scanMusicLibrary()
     }
 
-    override fun onResume() {
-        super.onResume()
+    override fun onStart() {
+        super.onStart()
+        serviceBound = bindService(
+            Intent(this, PlayerService::class.java),
+            serviceConnection,
+            Context.BIND_AUTO_CREATE
+        )
+    }
 
-        if (startAfterOverlayPermission && Settings.canDrawOverlays(this)) {
-            startAfterOverlayPermission = false
-            requestNotificationPermissionAndStart()
+    override fun onStop() {
+        playerService?.setListener(null)
+        if (serviceBound) {
+            try {
+                unbindService(serviceConnection)
+            } catch (_: IllegalArgumentException) {
+                // Service was already disconnected.
+            }
         }
-        refreshStatus()
+        serviceBound = false
+        playerService = null
+        super.onStop()
     }
 
-    override fun onPause() {
-        saveEditorState()
-        super.onPause()
+    override fun onDestroy() {
+        scannerExecutor.shutdownNow()
+        adapter.release()
+        super.onDestroy()
     }
 
     override fun onRequestPermissionsResult(
@@ -73,340 +114,215 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_NOTIFICATION_PERMISSION && startAfterNotificationPermission) {
-            // A foreground service may still run when notification permission is denied;
-            // Android will show it in the active-apps area instead of the notification drawer.
-            startAfterNotificationPermission = false
-            startOverlayService()
+        if (requestCode == REQUEST_PERMISSIONS) {
+            if (hasAudioPermission()) {
+                permissionBanner.visibility = View.GONE
+                scanMusicLibrary()
+            } else {
+                showPermissionRequired()
+            }
         }
     }
 
-    private fun buildScreen() {
-        val scrollView = ScrollView(this).apply {
-            isFillViewport = true
-            setBackgroundColor(COLOR_BACKGROUND)
-        }
-
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(28), dp(20), dp(32))
-        }
-
-        content.addView(TextView(this).apply {
-            text = "Floating Lyrics"
-            setTextColor(Color.WHITE)
-            textSize = 30f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        })
-        content.addView(TextView(this).apply {
-            text = "অন্য অ্যাপের উপর animated lyrics দেখান"
-            setTextColor(COLOR_TEXT_SECONDARY)
-            textSize = 15f
-            setPadding(0, dp(4), 0, 0)
-        })
-        content.addView(space(24))
-
-        statusCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = roundedBackground(COLOR_CARD, 16f)
-        }
-        statusCard.addView(TextView(this).apply {
-            text = "OVERLAY STATUS"
-            setTextColor(COLOR_PURPLE_LIGHT)
-            textSize = 12f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        })
-        statusText = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            setPadding(0, dp(5), 0, 0)
-        }
-        statusCard.addView(statusText)
-        content.addView(
-            statusCard,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        content.addView(space(12))
-
-        permissionButton = primaryButton("Overlay permission দিন").apply {
-            setOnClickListener {
-                if (Settings.canDrawOverlays(this@MainActivity)) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Overlay permission আগে থেকেই দেওয়া আছে",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                } else {
-                    openOverlayPermission(startWhenGranted = false)
-                }
-            }
-        }
-        content.addView(permissionButton, matchWidthParams())
-        content.addView(space(24))
-
-        content.addView(sectionLabel("লিরিক্স"))
-        content.addView(TextView(this).apply {
-            text = "প্রতি লাইনে একটি lyric লিখুন। LRC timestamp থাকলে সেটি স্বয়ংক্রিয়ভাবে বাদ যাবে।"
-            setTextColor(COLOR_TEXT_SECONDARY)
-            textSize = 13f
-            setPadding(0, dp(5), 0, dp(10))
-        })
-
-        lyricsInput = EditText(this).apply {
-            setTextColor(Color.WHITE)
-            setHintTextColor(COLOR_TEXT_MUTED)
-            hint = "প্রতি লাইনে একটি lyric…"
-            textSize = 16f
-            gravity = Gravity.TOP or Gravity.START
-            minLines = 8
-            maxLines = 14
-            inputType = InputType.TYPE_CLASS_TEXT or
-                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = roundedBackground(COLOR_INPUT, 14f, COLOR_BORDER)
-        }
-        content.addView(lyricsInput, matchWidthParams())
-        content.addView(space(18))
-
-        content.addView(sectionLabel("লাইন পরিবর্তনের সময় (সেকেন্ড)"))
-        intervalInput = EditText(this).apply {
-            setTextColor(Color.WHITE)
-            setHintTextColor(COLOR_TEXT_MUTED)
-            textSize = 16f
-            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
-            setSingleLine(true)
-            setPadding(dp(14), dp(11), dp(14), dp(11))
-            background = roundedBackground(COLOR_INPUT, 14f, COLOR_BORDER)
-        }
-        content.addView(intervalInput, matchWidthParams())
-        content.addView(space(22))
-
-        val actionRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-        }
-        startButton = primaryButton("▶  Overlay চালু").apply {
-            setOnClickListener { handleStartClick() }
-        }
-        val stopButton = secondaryButton("■  বন্ধ করুন").apply {
-            setOnClickListener {
-                stopService(Intent(this@MainActivity, LyricsOverlayService::class.java))
-                preferences.edit().putBoolean(LyricsOverlayService.PREF_IS_RUNNING, false).apply()
-                refreshStatus()
-                Toast.makeText(this@MainActivity, "Overlay বন্ধ হয়েছে", Toast.LENGTH_SHORT).show()
-            }
-        }
-        actionRow.addView(startButton, weightedParams(endMargin = 6))
-        actionRow.addView(stopButton, weightedParams(startMargin = 6))
-        content.addView(actionRow, matchWidthParams())
-        content.addView(space(18))
-
-        content.addView(TextView(this).apply {
-            text = "টিপ: Floating card-এর উপরের অংশ ধরে drag করুন। ‹ / › দিয়ে line বদলান, আর মাঝের button দিয়ে pause/resume করুন।"
-            setTextColor(COLOR_TEXT_MUTED)
-            textSize = 13f
-            gravity = Gravity.CENTER
-        })
-
-        scrollView.addView(
-            content,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        )
-        setContentView(scrollView)
-    }
-
-    private fun handleStartClick() {
-        saveEditorState()
-        if (!Settings.canDrawOverlays(this)) {
-            openOverlayPermission(startWhenGranted = true)
+    override fun onPlayerStateChanged(
+        song: Song?,
+        isPlaying: Boolean,
+        isBuffering: Boolean,
+        positionMs: Long,
+        durationMs: Long
+    ) {
+        if (song == null) {
+            miniPlayer.visibility = View.GONE
+            displayedSongId = null
+            adapter.setPlayingSong(null)
             return
         }
-        requestNotificationPermissionAndStart()
+
+        miniPlayer.visibility = View.VISIBLE
+        adapter.setPlayingSong(song.id)
+        latestDurationMs = durationMs.coerceAtLeast(song.durationMs)
+
+        if (displayedSongId != song.id) {
+            displayedSongId = song.id
+            miniSongTitle.text = song.title
+            miniSongArtist.text = song.artist
+            miniAlbumArt.animate().cancel()
+            miniAlbumArt.animate().alpha(0f).setDuration(120L).withEndAction {
+                adapter.loadArtworkInto(miniAlbumArt, song)
+                miniAlbumArt.animate().alpha(1f).setDuration(260L).start()
+            }.start()
+        }
+
+        updatePlayPauseIcon(isPlaying, isBuffering)
+        if (!userSeeking) {
+            seekBar.progress = if (latestDurationMs > 0) {
+                ((positionMs.coerceIn(0L, latestDurationMs) * SEEK_MAX) / latestDurationMs).toInt()
+            } else {
+                0
+            }
+        }
     }
 
-    private fun requestNotificationPermissionAndStart() {
+    private fun bindViews() {
+        recyclerView = findViewById(R.id.songRecyclerView)
+        emptyMessage = findViewById(R.id.emptyMessage)
+        permissionBanner = findViewById(R.id.permissionBanner)
+        permissionMessage = findViewById(R.id.permissionMessage)
+
+        miniPlayer = findViewById(R.id.miniPlayer)
+        miniAlbumArt = findViewById(R.id.miniAlbumArt)
+        miniSongTitle = findViewById(R.id.miniSongTitle)
+        miniSongArtist = findViewById(R.id.miniSongArtist)
+        playPauseButton = findViewById(R.id.playPauseButton)
+        seekBar = findViewById(R.id.playerSeekBar)
+        seekBar.max = SEEK_MAX
+    }
+
+    private fun setupRecyclerView() {
+        adapter = MusicListAdapter(this) { position -> playSong(position) }
+        recyclerView.adapter = adapter
+        recyclerView.setHasFixedSize(true)
+    }
+
+    private fun setupTopControls() {
+        findViewById<View>(R.id.settingsButton).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        findViewById<View>(R.id.grantPermissionButton).setOnClickListener {
+            requestMissingPermissions(forceAudioRequest = true)
+        }
+    }
+
+    private fun setupPlayerControls() {
+        playPauseButton.setOnClickListener { playerService?.togglePlayPause() }
+        findViewById<View>(R.id.previousButton).setOnClickListener { playerService?.previous() }
+        findViewById<View>(R.id.nextButton).setOnClickListener { playerService?.next() }
+
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) = Unit
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                userSeeking = true
+            }
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val progress = seekBar?.progress ?: 0
+                val target = if (latestDurationMs > 0) {
+                    latestDurationMs * progress / SEEK_MAX
+                } else {
+                    0L
+                }
+                playerService?.seekTo(target)
+                userSeeking = false
+            }
+        })
+    }
+
+    private fun playSong(position: Int) {
+        if (position !in songs.indices) return
+        val service = playerService
+        if (service == null) {
+            pendingSongPosition = position
+            Toast.makeText(this, "Preparing player…", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        try {
+            ContextCompat.startForegroundService(
+                this,
+                Intent(this, PlayerService::class.java).setAction(PlayerService.ACTION_START)
+            )
+            service.playSongs(songs, position)
+        } catch (_: Exception) {
+            Toast.makeText(this, "Unable to start playback", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun scanMusicLibrary() {
+        emptyMessage.visibility = View.VISIBLE
+        emptyMessage.setText(R.string.loading_music)
+        scannerExecutor.execute {
+            val scannedSongs = MusicScannerUtil.scan(applicationContext)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                songs.clear()
+                songs.addAll(scannedSongs)
+                adapter.submitList(scannedSongs)
+                emptyMessage.visibility = if (scannedSongs.isEmpty()) View.VISIBLE else View.GONE
+                if (scannedSongs.isEmpty()) emptyMessage.setText(R.string.no_songs)
+            }
+        }
+    }
+
+    private fun requestMissingPermissions(forceAudioRequest: Boolean = false) {
+        val missing = mutableListOf<String>()
+        val audioPermission = requiredAudioPermission()
+        if (forceAudioRequest || ContextCompat.checkSelfPermission(this, audioPermission) != PackageManager.PERMISSION_GRANTED) {
+            missing += audioPermission
+        }
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
-            startAfterNotificationPermission = true
-            requestPermissions(
-                arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                REQUEST_NOTIFICATION_PERMISSION
-            )
-        } else {
-            startOverlayService()
-        }
-    }
-
-    private fun startOverlayService() {
-        val rawLyrics = lyricsInput.text.toString().ifBlank { DEFAULT_LYRICS }
-        val intervalMillis = ((intervalInput.text.toString().toDoubleOrNull() ?: 4.5) * 1_000)
-            .toLong()
-            .coerceIn(1_500L, 30_000L)
-
-        val serviceIntent = Intent(this, LyricsOverlayService::class.java).apply {
-            action = LyricsOverlayService.ACTION_START
-            putExtra(LyricsOverlayService.EXTRA_LYRICS, rawLyrics)
-            putExtra(LyricsOverlayService.EXTRA_INTERVAL_MILLIS, intervalMillis)
+            missing += Manifest.permission.POST_NOTIFICATIONS
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
+        if (missing.isNotEmpty()) {
+            requestPermissions(missing.distinct().toTypedArray(), REQUEST_PERMISSIONS)
         }
-
-        preferences.edit()
-            .putString(LyricsOverlayService.PREF_LYRICS, rawLyrics)
-            .putLong(LyricsOverlayService.PREF_INTERVAL_MILLIS, intervalMillis)
-            .apply()
-
-        Toast.makeText(this, "Floating lyrics চালু হয়েছে", Toast.LENGTH_SHORT).show()
-        statusText.postDelayed({ refreshStatus() }, 250)
+        if (!hasAudioPermission()) showPermissionRequired()
     }
 
-    private fun openOverlayPermission(startWhenGranted: Boolean) {
-        startAfterOverlayPermission = startWhenGranted
-        val intent = Intent(
-            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-            Uri.parse("package:$packageName")
-        )
-        try {
-            startActivity(intent)
-        } catch (_: ActivityNotFoundException) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
-        }
+    private fun showPermissionRequired() {
+        permissionBanner.visibility = View.VISIBLE
+        permissionMessage.setText(R.string.permission_needed)
+        emptyMessage.visibility = View.VISIBLE
+        emptyMessage.setText(R.string.permission_needed)
     }
 
-    private fun refreshStatus() {
-        val hasPermission = Settings.canDrawOverlays(this)
-        val isRunning = preferences.getBoolean(LyricsOverlayService.PREF_IS_RUNNING, false)
+    private fun hasAudioPermission(): Boolean = ContextCompat.checkSelfPermission(
+        this,
+        requiredAudioPermission()
+    ) == PackageManager.PERMISSION_GRANTED
 
-        statusText.text = when {
-            !hasPermission -> "Permission প্রয়োজন"
-            isRunning -> "চালু আছে • অন্য অ্যাপ খুলে দেখুন"
-            else -> "Ready • permission দেওয়া আছে"
-        }
-        statusCard.background = roundedBackground(
-            when {
-                !hasPermission -> COLOR_WARNING_CARD
-                isRunning -> COLOR_RUNNING_CARD
-                else -> COLOR_CARD
-            },
-            16f
-        )
-        permissionButton.text = if (hasPermission) "✓ Overlay permission দেওয়া আছে" else "Overlay permission দিন"
-        permissionButton.alpha = if (hasPermission) 0.72f else 1f
-        startButton.isEnabled = hasPermission
-        startButton.alpha = if (hasPermission) 1f else 0.55f
+    private fun requiredAudioPermission(): String = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.READ_MEDIA_AUDIO
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
     }
 
-    private fun restoreEditorState() {
-        lyricsInput.setText(preferences.getString(LyricsOverlayService.PREF_LYRICS, DEFAULT_LYRICS))
-        val savedInterval = preferences.getLong(LyricsOverlayService.PREF_INTERVAL_MILLIS, 4_500L)
-        intervalInput.setText(formatSeconds(savedInterval))
+    private fun updatePlayPauseIcon(isPlaying: Boolean, isBuffering: Boolean) {
+        val effectivePlaying = isPlaying || isBuffering
+        if (displayedPlayingState == effectivePlaying) return
+        displayedPlayingState = effectivePlaying
+
+        playPauseButton.animate().cancel()
+        playPauseButton.animate()
+            .alpha(0.35f)
+            .scaleX(0.72f)
+            .scaleY(0.72f)
+            .rotationBy(70f)
+            .setDuration(110L)
+            .withEndAction {
+                playPauseButton.setImageResource(
+                    if (effectivePlaying) R.drawable.ic_pause else R.drawable.ic_play
+                )
+                playPauseButton.contentDescription = getString(
+                    if (effectivePlaying) R.string.pause else R.string.play
+                )
+                playPauseButton.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .rotation(0f)
+                    .setDuration(190L)
+                    .start()
+            }
+            .start()
     }
-
-    private fun saveEditorState() {
-        if (!::lyricsInput.isInitialized || !::intervalInput.isInitialized) return
-        val interval = ((intervalInput.text.toString().toDoubleOrNull() ?: 4.5) * 1_000)
-            .toLong()
-            .coerceIn(1_500L, 30_000L)
-        preferences.edit()
-            .putString(LyricsOverlayService.PREF_LYRICS, lyricsInput.text.toString())
-            .putLong(LyricsOverlayService.PREF_INTERVAL_MILLIS, interval)
-            .apply()
-    }
-
-    private fun formatSeconds(milliseconds: Long): String {
-        val seconds = milliseconds / 1_000.0
-        return if (seconds % 1.0 == 0.0) seconds.toInt().toString() else seconds.toString()
-    }
-
-    private fun sectionLabel(value: String) = TextView(this).apply {
-        text = value
-        setTextColor(Color.WHITE)
-        textSize = 15f
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-    }
-
-    private fun primaryButton(label: String) = Button(this).apply {
-        text = label
-        setTextColor(Color.WHITE)
-        textSize = 14f
-        isAllCaps = false
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        backgroundTintList = ColorStateList.valueOf(COLOR_PURPLE)
-        minHeight = dp(52)
-    }
-
-    private fun secondaryButton(label: String) = Button(this).apply {
-        text = label
-        setTextColor(Color.WHITE)
-        textSize = 14f
-        isAllCaps = false
-        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        backgroundTintList = ColorStateList.valueOf(COLOR_CARD_LIGHT)
-        minHeight = dp(52)
-    }
-
-    private fun roundedBackground(color: Int, radiusDp: Float, strokeColor: Int? = null) =
-        GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            setColor(color)
-            cornerRadius = dp(radiusDp).toFloat()
-            if (strokeColor != null) setStroke(dp(1), strokeColor)
-        }
-
-    private fun space(heightDp: Int) = Space(this).apply {
-        layoutParams = LinearLayout.LayoutParams(1, dp(heightDp))
-    }
-
-    private fun matchWidthParams() = LinearLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
-    )
-
-    private fun weightedParams(startMargin: Int = 0, endMargin: Int = 0) =
-        LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-            marginStart = dp(startMargin)
-            marginEnd = dp(endMargin)
-        }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-    private fun dp(value: Float): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
-        private const val REQUEST_NOTIFICATION_PERMISSION = 2001
-
-        private val COLOR_BACKGROUND = Color.rgb(16, 19, 26)
-        private val COLOR_CARD = Color.rgb(30, 34, 46)
-        private val COLOR_CARD_LIGHT = Color.rgb(48, 53, 68)
-        private val COLOR_INPUT = Color.rgb(25, 29, 39)
-        private val COLOR_BORDER = Color.rgb(58, 64, 82)
-        private val COLOR_PURPLE = Color.rgb(124, 77, 255)
-        private val COLOR_PURPLE_LIGHT = Color.rgb(190, 167, 255)
-        private val COLOR_TEXT_SECONDARY = Color.rgb(184, 188, 201)
-        private val COLOR_TEXT_MUTED = Color.rgb(132, 138, 156)
-        private val COLOR_WARNING_CARD = Color.rgb(66, 47, 32)
-        private val COLOR_RUNNING_CARD = Color.rgb(25, 62, 52)
-
-        private val DEFAULT_LYRICS = """
-            রাতের আকাশ জুড়ে যত তারা
-            তোমার নামে জ্বলে তারা
-            Every beat becomes a light
-            Floating gently through the night
-            শব্দগুলো রঙ বদলে যায়
-            গানটি তবু থেকে যায়
-        """.trimIndent()
+        private const val REQUEST_PERMISSIONS = 601
+        private const val SEEK_MAX = 1_000
     }
 }

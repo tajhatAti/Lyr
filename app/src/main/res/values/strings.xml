@@ -1,5 +1,28 @@
 <resources>
-    <string name="app_name">Lyrics Overlay</string>
-    <string name="notification_channel_name">Floating lyrics</string>
-    <string name="notification_channel_description">Keeps the floating lyrics window running</string>
+    <string name="app_name">Lyr Music</string>
+    <string name="library_title">Your music</string>
+    <string name="library_subtitle">Local songs with floating synced lyrics</string>
+    <string name="settings">Lyrics overlay settings</string>
+    <string name="notification_channel_name">Music playback</string>
+    <string name="notification_channel_description">Playback controls for the current song</string>
+    <string name="permission_needed">Music permission is needed to show your local songs.</string>
+    <string name="grant_permission">Grant permission</string>
+    <string name="no_songs">No MP3, M4A, WAV or FLAC files were found.</string>
+    <string name="loading_music">Scanning your music…</string>
+    <string name="unknown_artist">Unknown artist</string>
+    <string name="nothing_playing">Nothing playing</string>
+    <string name="previous">Previous</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="next">Next</string>
+    <string name="overlay_permission_title">Display over other apps</string>
+    <string name="overlay_permission_description">Allow this once so synced lyrics can float above other apps.</string>
+    <string name="open_overlay_permission">Allow floating lyrics</string>
+    <string name="overlay_permission_granted">Floating lyrics permission granted</string>
+    <string name="font_size">Font size</string>
+    <string name="font_style">Font style</string>
+    <string name="text_color">Text color</string>
+    <string name="animation_style">Animation style</string>
+    <string name="reset_position">Reset overlay position</string>
+    <string name="settings_hint">Changes are saved automatically and applied live.</string>
 </resources>
