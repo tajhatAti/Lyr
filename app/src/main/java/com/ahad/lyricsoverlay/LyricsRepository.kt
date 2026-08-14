@@ -348,8 +348,11 @@ class LyricsRepository(private val context: Context) {
         }
 
     private fun readValidLrc(file: File): String? = try {
-        if (!file.isFile) return null
-        file.readText(Charsets.UTF_8).takeIf { LrcParser.parse(it).isNotEmpty() }
+        if (file.isFile) {
+            file.readText(Charsets.UTF_8).takeIf { LrcParser.parse(it).isNotEmpty() }
+        } else {
+            null
+        }
     } catch (_: Exception) {
         null
     }
