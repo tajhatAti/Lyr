@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # Release তৈরি করার অনুমতি দেওয়ার জন্য 'write' করা হয়েছে
 
 concurrency:
   group: android-apk-${{ github.ref }}
@@ -42,10 +42,22 @@ jobs:
       - name: Build installable debug APK
         run: ./gradlew --no-daemon assembleDebug
 
-      - name: Upload APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: lyrics-overlay-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      # --- নিচে নতুন Release তৈরির স্টেপ যোগ করা হলো ---
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'push'
+        with:
+          tag_name: "v1.0.${{ github.run_number }}"
+          name: "Debug Build #${{ github.run_number }}"
+          draft: false
+          prerelease: true
+          files: app/build/outputs/apk/debug/app-debug.apk
+          
