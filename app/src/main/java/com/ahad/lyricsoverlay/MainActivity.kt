@@ -6,12 +6,17 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
+import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageButton
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.SeekBar
 import android.widget.TextView
@@ -21,7 +26,9 @@ import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import androidx.recyclerview.widget.SimpleItemAnimator
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -43,6 +50,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var miniAlbumArt: ImageView
     private lateinit var miniSongTitle: TextView
     private lateinit var miniSongArtist: TextView
+    private lateinit var miniLyricsStatus: TextView
     private lateinit var playPauseButton: ImageButton
     private lateinit var seekBar: SeekBar
 
@@ -52,20 +60,26 @@ class MainActivity : AppCompatActivity(),
     private var customization = AppPreferences.snapshot()
     private var playerService: PlayerService? = null
     private var serviceBound = false
-    private var pendingSongPosition: Int? = null
+    private var pendingSongId: Long? = null
     private var userSeeking = false
     private var latestDurationMs = 0L
     private var displayedSongId: Long? = null
     private var displayedPlayingState: Boolean? = null
+    private var lyricsLoadState = LyricsLoadState.IDLE
+    private var overlayPermissionPromptShown = false
+    private var layoutAnimationGeneration = 0
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             playerService = (binder as? PlayerService.LocalBinder)?.getService()
             serviceBound = playerService != null
             playerService?.setListener(this@MainActivity)
-            pendingSongPosition?.let { position ->
-                pendingSongPosition = null
-                playSong(position)
+            pendingSongId?.let { songId ->
+                pendingSongId = null
+                visibleSongs.firstOrNull { it.id == songId }?.let(::playSong)
+            }
+            if (Settings.canDrawOverlays(this@MainActivity)) {
+                playerService?.refreshOverlayNow()
             }
         }
 
@@ -103,6 +117,12 @@ class MainActivity : AppCompatActivity(),
         )
     }
 
+    override fun onResume() {
+        super.onResume()
+        updateLyricsStatus()
+        if (Settings.canDrawOverlays(this)) playerService?.refreshOverlayNow()
+    }
+
     override fun onStop() {
         playerService?.setListener(null)
         if (serviceBound) {
@@ -130,12 +150,18 @@ class MainActivity : AppCompatActivity(),
             val previous = customization
             customization = snapshot
 
+            AppPreferences.songIdFromTitleKey(changedKey)?.let { songId ->
+                applyRenamedSong(songId)
+                return@runOnUiThread
+            }
+
             if (previous.themeMode != snapshot.themeMode) {
                 LyrApplication.applyThemeMode(snapshot.themeMode)
                 return@runOnUiThread
             }
 
             AppUi.apply(this, mainRoot, snapshot)
+            updateLyricsStatus()
             val structureChanged = previous.layoutMode != snapshot.layoutMode ||
                 previous.gridColumns != snapshot.gridColumns ||
                 previous.itemStyle != snapshot.itemStyle
@@ -181,6 +207,7 @@ class MainActivity : AppCompatActivity(),
     ) {
         if (song == null) {
             miniPlayer.visibility = View.GONE
+            miniLyricsStatus.visibility = View.GONE
             displayedSongId = null
             adapter.setPlayingSong(null)
             return
@@ -192,14 +219,15 @@ class MainActivity : AppCompatActivity(),
 
         if (displayedSongId != song.id) {
             displayedSongId = song.id
-            miniSongTitle.text = song.title
-            miniSongArtist.text = song.artist
             miniAlbumArt.animate().cancel()
-            miniAlbumArt.animate().alpha(0f).setDuration(120L).withEndAction {
+            miniAlbumArt.animate().alpha(0f).setDuration(90L).withEndAction {
                 adapter.loadArtworkInto(miniAlbumArt, song)
-                miniAlbumArt.animate().alpha(1f).setDuration(260L).start()
+                miniAlbumArt.animate().alpha(1f).setDuration(180L).start()
             }.start()
+            updateLyricsStatus()
         }
+        if (miniSongTitle.text.toString() != song.title) miniSongTitle.text = song.title
+        if (miniSongArtist.text.toString() != song.artist) miniSongArtist.text = song.artist
 
         updatePlayPauseIcon(isPlaying, isBuffering)
         if (!userSeeking) {
@@ -209,6 +237,11 @@ class MainActivity : AppCompatActivity(),
                 0
             }
         }
+    }
+
+    override fun onLyricsLoadStateChanged(state: LyricsLoadState) {
+        lyricsLoadState = state
+        updateLyricsStatus()
     }
 
     private fun bindViews() {
@@ -225,16 +258,29 @@ class MainActivity : AppCompatActivity(),
         miniAlbumArt = findViewById(R.id.miniAlbumArt)
         miniSongTitle = findViewById(R.id.miniSongTitle)
         miniSongArtist = findViewById(R.id.miniSongArtist)
+        miniLyricsStatus = findViewById(R.id.miniLyricsStatus)
         playPauseButton = findViewById(R.id.playPauseButton)
         seekBar = findViewById(R.id.playerSeekBar)
         seekBar.max = SEEK_MAX
     }
 
     private fun setupRecyclerView() {
-        adapter = MusicListAdapter(this) { position -> playSong(position) }
+        adapter = MusicListAdapter(
+            context = this,
+            onSongClicked = ::playSong,
+            onSongLongClicked = ::showRenameSongDialog
+        )
         recyclerView.adapter = adapter
         recyclerView.layoutManager = createLayoutManager(customization)
         recyclerView.setHasFixedSize(false)
+        recyclerView.setItemViewCacheSize(10)
+        (recyclerView.itemAnimator as? SimpleItemAnimator)?.apply {
+            supportsChangeAnimations = false
+            addDuration = 150L
+            removeDuration = 120L
+            moveDuration = 180L
+            changeDuration = 120L
+        }
         adapter.updateConfiguration(customization)
     }
 
@@ -280,12 +326,14 @@ class MainActivity : AppCompatActivity(),
         })
     }
 
-    private fun playSong(position: Int) {
-        if (position !in visibleSongs.indices) return
+    private fun playSong(song: Song) {
+        val position = visibleSongs.indexOfFirst { it.id == song.id }
+        if (position < 0) return
         val service = playerService
         if (service == null) {
-            pendingSongPosition = position
+            pendingSongId = song.id
             Toast.makeText(this, R.string.preparing_player, Toast.LENGTH_SHORT).show()
+            maybeShowOverlayPermissionPrompt()
             return
         }
 
@@ -295,21 +343,25 @@ class MainActivity : AppCompatActivity(),
                 Intent(this, PlayerService::class.java).setAction(PlayerService.ACTION_START)
             )
             service.playSongs(visibleSongs, position)
+            maybeShowOverlayPermissionPrompt()
         } catch (_: Exception) {
             Toast.makeText(this, R.string.unable_to_start_playback, Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun scanMusicLibrary() {
-        emptyMessage.visibility = View.VISIBLE
-        emptyMessage.setText(R.string.loading_music)
+    private fun scanMusicLibrary(preserveAnchor: Boolean = false) {
+        if (!preserveAnchor || visibleSongs.isEmpty()) {
+            emptyMessage.visibility = View.VISIBLE
+            emptyMessage.setText(R.string.loading_music)
+        }
         scannerExecutor.execute {
             val result = MusicScannerUtil.scan(applicationContext)
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 scannedSongs.clear()
                 scannedSongs.addAll(result)
-                sortAndDisplaySongs(preserveAnchor = false)
+                playerService?.synchronizeSongMetadata(result)
+                sortAndDisplaySongs(preserveAnchor = preserveAnchor)
                 emptyMessage.visibility = if (visibleSongs.isEmpty()) View.VISIBLE else View.GONE
                 if (visibleSongs.isEmpty()) emptyMessage.setText(R.string.no_songs)
                 updateLibrarySummary()
@@ -339,14 +391,16 @@ class MainActivity : AppCompatActivity(),
         }
         visibleSongs.clear()
         visibleSongs.addAll(sorted)
-        adapter.submitList(sorted)
-        restoreScrollAnchor(anchor)
+        adapter.submitList(sorted) {
+            restoreScrollAnchor(anchor)
+        }
         emptyMessage.visibility = if (visibleSongs.isEmpty()) View.VISIBLE else View.GONE
         updateLibrarySummary()
     }
 
     private fun rebuildRecyclerView(snapshot: CustomizationSnapshot, animate: Boolean) {
         val anchor = captureScrollAnchor()
+        val generation = ++layoutAnimationGeneration
         val applyChange = {
             recyclerView.layoutManager = createLayoutManager(snapshot)
             recyclerView.recycledViewPool.clear()
@@ -357,14 +411,16 @@ class MainActivity : AppCompatActivity(),
         recyclerView.animate().cancel()
         if (!animate || recyclerView.visibility != View.VISIBLE) {
             applyChange()
+            recyclerView.alpha = 1f
             return
         }
         recyclerView.animate()
             .alpha(0f)
-            .setDuration(120L)
+            .setDuration(85L)
             .withEndAction {
+                if (generation != layoutAnimationGeneration) return@withEndAction
                 applyChange()
-                recyclerView.animate().alpha(1f).setDuration(190L).start()
+                recyclerView.animate().alpha(1f).setDuration(155L).start()
             }
             .start()
     }
@@ -382,7 +438,7 @@ class MainActivity : AppCompatActivity(),
         if (position == RecyclerView.NO_POSITION) return null
         val view = layoutManager.findViewByPosition(position)
         return ScrollAnchor(
-            songId = visibleSongs.getOrNull(position)?.id,
+            songId = adapter.songIdAt(position),
             fallbackPosition = position,
             topOffset = (view?.top ?: recyclerView.paddingTop) - recyclerView.paddingTop
         )
@@ -416,6 +472,72 @@ class MainActivity : AppCompatActivity(),
         layoutModeButton.imageTintList = android.content.res.ColorStateList.valueOf(customization.accentColor)
     }
 
+    private fun showRenameSongDialog(song: Song) {
+        val titleInput = EditText(this).apply {
+            setText(song.title)
+            setSelection(text.length)
+            hint = getString(R.string.rename_song_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
+                InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+            maxLines = 2
+            selectAllOnFocus = false
+        }
+        val inputContainer = FrameLayout(this).apply {
+            val horizontalPadding = (24 * resources.displayMetrics.density).toInt()
+            val verticalPadding = (8 * resources.displayMetrics.density).toInt()
+            setPadding(horizontalPadding, verticalPadding, horizontalPadding, 0)
+            addView(
+                titleInput,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        val hasCustomTitle = AppPreferences.songTitle(song.id) != null
+        val builder = MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.rename_song)
+            .setMessage(R.string.rename_song_description)
+            .setView(inputContainer)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.save, null)
+        if (hasCustomTitle) {
+            builder.setNeutralButton(R.string.restore_original_title) { _, _ ->
+                AppPreferences.clearSongTitle(song.id)
+                Toast.makeText(this, R.string.original_title_restored, Toast.LENGTH_SHORT).show()
+            }
+        }
+        val dialog = builder.create()
+        dialog.setOnShowListener {
+            dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE).setOnClickListener {
+                val renamedTitle = titleInput.text?.toString()?.trim().orEmpty()
+                if (renamedTitle.isBlank()) {
+                    titleInput.error = getString(R.string.song_title_required)
+                } else {
+                    AppPreferences.setSongTitle(song.id, renamedTitle)
+                    Toast.makeText(this, R.string.song_renamed, Toast.LENGTH_SHORT).show()
+                    dialog.dismiss()
+                }
+            }
+            titleInput.requestFocus()
+        }
+        dialog.show()
+    }
+
+    private fun applyRenamedSong(songId: Long) {
+        val renamedTitle = AppPreferences.songTitle(songId)
+        if (renamedTitle == null) {
+            scanMusicLibrary(preserveAnchor = true)
+            return
+        }
+        val index = scannedSongs.indexOfFirst { it.id == songId }
+        if (index < 0) return
+        scannedSongs[index] = scannedSongs[index].copy(title = renamedTitle)
+        playerService?.updateSongTitle(songId, renamedTitle)
+        sortAndDisplaySongs(preserveAnchor = true)
+    }
+
     private fun updateLibrarySummary() {
         val sortLabel = when (customization.sortOrder) {
             LibrarySortOrder.TITLE -> getString(R.string.sort_title_short)
@@ -434,6 +556,70 @@ class MainActivity : AppCompatActivity(),
             sortLabel,
             modeLabel
         )
+    }
+
+    private fun updateLyricsStatus() {
+        if (!::miniLyricsStatus.isInitialized || displayedSongId == null) {
+            if (::miniLyricsStatus.isInitialized) miniLyricsStatus.visibility = View.GONE
+            return
+        }
+        miniLyricsStatus.visibility = View.VISIBLE
+        miniLyricsStatus.setTextColor(customization.accentColor)
+        if (!Settings.canDrawOverlays(this)) {
+            miniLyricsStatus.setText(R.string.lyrics_overlay_permission_needed)
+            miniLyricsStatus.isClickable = true
+            miniLyricsStatus.setOnClickListener { openOverlayPermissionSettings() }
+            return
+        }
+
+        when (lyricsLoadState) {
+            LyricsLoadState.IDLE,
+            LyricsLoadState.SEARCHING -> {
+                miniLyricsStatus.setText(R.string.lyrics_searching)
+                miniLyricsStatus.isClickable = false
+                miniLyricsStatus.setOnClickListener(null)
+            }
+            LyricsLoadState.READY -> {
+                miniLyricsStatus.setText(R.string.lyrics_ready)
+                miniLyricsStatus.isClickable = false
+                miniLyricsStatus.setOnClickListener(null)
+            }
+            LyricsLoadState.NOT_FOUND -> {
+                miniLyricsStatus.setText(R.string.lyrics_not_found_retry)
+                miniLyricsStatus.isClickable = true
+                miniLyricsStatus.setOnClickListener { playerService?.retryLyrics() }
+            }
+        }
+    }
+
+    private fun maybeShowOverlayPermissionPrompt() {
+        if (Settings.canDrawOverlays(this) || overlayPermissionPromptShown) return
+        overlayPermissionPromptShown = true
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.overlay_permission_title)
+            .setMessage(R.string.overlay_playback_permission_explanation)
+            .setNegativeButton(R.string.not_now, null)
+            .setPositiveButton(R.string.open_overlay_permission) { _, _ ->
+                openOverlayPermissionSettings()
+            }
+            .show()
+    }
+
+    private fun openOverlayPermissionSettings() {
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+            )
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+            } catch (_: Exception) {
+                Toast.makeText(this, R.string.unable_to_open_overlay_settings, Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun requestMissingPermissions(forceAudioRequest: Boolean = false) {

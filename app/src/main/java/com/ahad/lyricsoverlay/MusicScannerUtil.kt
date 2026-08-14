@@ -92,11 +92,13 @@ object MusicScannerUtil {
                         null
                     }
 
+                    val mediaStoreTitle = rawTitle.ifBlank {
+                        fileName.substringBeforeLast('.').ifBlank { "Unknown song" }
+                    }
                     songs += Song(
                         id = id,
-                        title = rawTitle.ifBlank {
-                            fileName.substringBeforeLast('.').ifBlank { "Unknown song" }
-                        },
+                        title = AppPreferences.songTitle(id) ?: mediaStoreTitle,
+                        sourceTitle = mediaStoreTitle,
                         artist = rawArtist
                             .takeUnless { it.isBlank() || it.equals("<unknown>", ignoreCase = true) }
                             ?: context.getString(R.string.unknown_artist),

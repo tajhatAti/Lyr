@@ -19,6 +19,22 @@
     <string name="next">Next</string>
     <string name="preparing_player">Preparing the music player…</string>
     <string name="unable_to_start_playback">Unable to start playback. Please try again.</string>
+    <string name="song_item_description">%1$s by %2$s. Tap to play; touch and hold to rename.</string>
+    <string name="rename_song">Rename song</string>
+    <string name="rename_song_description">This changes the title shown in Lyr Music. The audio file itself is not modified.</string>
+    <string name="rename_song_hint">Song title</string>
+    <string name="save">Save</string>
+    <string name="restore_original_title">Restore original</string>
+    <string name="original_title_restored">Original song title restored</string>
+    <string name="song_title_required">Enter a song title</string>
+    <string name="song_renamed">Song renamed</string>
+    <string name="lyrics_searching">Searching for synced lyrics…</string>
+    <string name="lyrics_ready">Synced lyrics ready</string>
+    <string name="lyrics_not_found_retry">No synced lyrics found · Tap to retry</string>
+    <string name="lyrics_overlay_permission_needed">Floating lyrics disabled · Tap to allow</string>
+    <string name="overlay_playback_permission_explanation">Music can play now, but Android needs one additional permission to show synchronized lyrics above other apps.</string>
+    <string name="not_now">Not now</string>
+    <string name="unable_to_open_overlay_settings">Unable to open the floating lyrics permission screen.</string>
 
     <string name="switch_to_grid">Switch to grid view</string>
     <string name="switch_to_list">Switch to list view</string>

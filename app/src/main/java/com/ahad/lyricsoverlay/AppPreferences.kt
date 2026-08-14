@@ -52,6 +52,7 @@ object AppPreferences {
     const val KEY_OVERLAY_ANIMATION = "overlay_animation"
     const val KEY_OVERLAY_X = "overlay_x"
     const val KEY_OVERLAY_Y = "overlay_y"
+    const val KEY_SONG_TITLE_PREFIX = "song_title_"
 
     const val OVERLAY_FONT_REGULAR = "regular"
     const val OVERLAY_FONT_BOLD = "bold"
@@ -137,6 +138,26 @@ object AppPreferences {
     fun setAppFont(value: AppFont) =
         preferences.edit().putString(KEY_APP_FONT, value.name).apply()
 
+    fun songTitle(songId: Long): String? = preferences
+        .getString(songTitleKey(songId), null)
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+
+    fun setSongTitle(songId: Long, title: String) {
+        val cleanedTitle = title.trim().take(160)
+        if (cleanedTitle.isEmpty()) return
+        preferences.edit().putString(songTitleKey(songId), cleanedTitle).apply()
+    }
+
+    fun clearSongTitle(songId: Long) = preferences.edit()
+        .remove(songTitleKey(songId))
+        .apply()
+
+    fun songIdFromTitleKey(key: String): Long? = key
+        .takeIf { it.startsWith(KEY_SONG_TITLE_PREFIX) }
+        ?.removePrefix(KEY_SONG_TITLE_PREFIX)
+        ?.toLongOrNull()
+
     fun overlayFontSize(): Float = preferences.getFloat(
         KEY_OVERLAY_FONT_SIZE,
         DEFAULT_OVERLAY_FONT_SIZE
@@ -198,6 +219,8 @@ object AppPreferences {
         val value = preferences.getString(key, fallback.name) ?: return fallback
         return enumValues<T>().firstOrNull { it.name == value } ?: fallback
     }
+
+    private fun songTitleKey(songId: Long): String = "$KEY_SONG_TITLE_PREFIX$songId"
 
     private fun opaqueColor(color: Int): Int = Color.rgb(
         Color.red(color),

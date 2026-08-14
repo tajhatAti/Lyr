@@ -5,23 +5,26 @@ Lyr is a native Android music player that scans music stored on the device, keep
 ## Features
 
 - Native Kotlin app with XML layouts (no Jetpack Compose)
-- Dark, polished local music library with album artwork, artist, duration, rounded cards, ripple feedback, and current-track highlighting
+- Customizable local library with instant List/Grid switching, 2- or 3-column grids, album artwork, duration, ripple feedback, and current-track highlighting
+- Three real item styles (flat, elevated rounded, and compact), four sort orders, five bundled fonts, independent Light/Dark/System themes, and preset or custom accent colors
+- Persisted in-app song renaming: touch and hold any library song, enter a title, or restore its original MediaStore title later
 - MediaStore scanning for MP3, M4A, WAV, and FLAC files
 - Correct scoped-storage permissions:
   - Android 13+: `READ_MEDIA_AUDIO`
   - Android 12 and below: `READ_EXTERNAL_STORAGE`
-- Persistent mini-player with previous, animated play/pause, next, album artwork, and seek control
+- Persistent mini-player with previous, animated play/pause, next, album artwork, seek control, and visible lyric search/ready/not-found status with retry
 - Background playback with `PlayerService`, `MediaPlayer`, audio focus handling, and becoming-noisy protection
 - MediaSession notification and lock-screen previous/play-pause/next controls
 - Time-synced lyrics with this fallback order:
   1. App's local lyrics cache
-  2. LRCLIB public API search by title and artist
+  2. LRCLIB public API with cleaned title/artist fallback searches and duration-aware candidate matching
   3. Same-name local `.lrc` file when Android storage access allows it
-  4. Silent no-lyrics fallback
+  4. Visible no-lyrics status with a manual retry action
 - Floating `TYPE_APPLICATION_OVERLAY` lyric text with no card or background
 - Draggable lyrics with persisted X/Y position
 - Fade, scale, and slide lyric animations plus animated color transitions
-- Separate settings screen with live preview, font size, font presets, color palette, animation choice, overlay permission shortcut, and position reset
+- One live settings screen for app theme, library layout/style/sort/font/accent and overlay font size/style/color/animation, permission shortcut, and position reset
+- All appearance choices persist in one observable preferences manager and apply to the Home screen without restarting
 - Graceful handling for denied permissions, unavailable artwork, missing lyrics, network failures, and unreadable files
 
 ## Requirements
@@ -62,10 +65,10 @@ Android may ask you to allow installation from the browser or file manager used 
 
 1. Open Lyr and allow access to music/audio files.
 2. On Android 13+, allow notifications so playback controls can be shown normally.
-3. Tap a song to start playback.
-4. Open the settings button in the top-right corner.
-5. Tap **Allow over other apps**, enable Lyr in Android Settings, and return to Lyr.
-6. Adjust lyric font, size, color, and animation if desired.
+3. Tap a song to start playback. If floating lyrics are not allowed yet, use the prompt or the status below the artist to open Android's permission screen.
+4. Enable **Display over other apps** for Lyr and return. The current lyric is retried automatically; playback does not need to be restarted.
+5. Open the settings button in the top-right corner to customize the Home layout, item style, sorting, theme, accent, app font, and lyric appearance.
+6. Touch and hold a song to rename it inside Lyr. Touch and hold it again and choose **Restore original** to remove the override.
 7. Drag the lyric text anywhere on screen; its position is saved automatically.
 
 Lyrics are downloaded only when a track needs them. Successful synced lyrics are cached in the app's private storage for future offline playback.

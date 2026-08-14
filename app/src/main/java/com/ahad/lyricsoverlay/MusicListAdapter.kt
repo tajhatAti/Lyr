@@ -15,6 +15,8 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.core.graphics.ColorUtils
+import androidx.recyclerview.widget.AsyncListDiffer
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.color.MaterialColors
@@ -22,10 +24,13 @@ import java.util.concurrent.Executors
 
 class MusicListAdapter(
     private val context: Context,
-    private val onSongClicked: (position: Int) -> Unit
+    private val onSongClicked: (Song) -> Unit,
+    private val onSongLongClicked: (Song) -> Unit
 ) : RecyclerView.Adapter<MusicListAdapter.SongViewHolder>() {
 
-    private val songs = mutableListOf<Song>()
+    private val differ = AsyncListDiffer(this, SONG_DIFF)
+    private val songs: List<Song>
+        get() = differ.currentList
     private val artworkExecutor = Executors.newFixedThreadPool(2)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var playingSongId: Long? = null
@@ -43,18 +48,25 @@ class MusicListAdapter(
         setHasStableIds(true)
     }
 
-    fun submitList(newSongs: List<Song>) {
-        songs.clear()
-        songs.addAll(newSongs)
-        notifyDataSetChanged()
+    fun submitList(newSongs: List<Song>, onCommitted: (() -> Unit)? = null) {
+        differ.submitList(newSongs.toList()) { onCommitted?.invoke() }
     }
 
     fun updateConfiguration(snapshot: CustomizationSnapshot) {
         if (configuration == snapshot) return
+        val structureChanged = configuration.layoutMode != snapshot.layoutMode ||
+            configuration.itemStyle != snapshot.itemStyle
+        val appearanceChanged = configuration.accentColor != snapshot.accentColor ||
+            configuration.appFont != snapshot.appFont
         configuration = snapshot
         selectedTypeface = AppUi.typeface(android.view.View(context), snapshot.appFont)
-        notifyDataSetChanged()
+        when {
+            structureChanged -> notifyDataSetChanged()
+            appearanceChanged && itemCount > 0 -> notifyItemRangeChanged(0, itemCount, PAYLOAD_APPEARANCE)
+        }
     }
+
+    fun songIdAt(position: Int): Long? = songs.getOrNull(position)?.id
 
     fun setPlayingSong(songId: Long?) {
         val previousId = playingSongId
@@ -62,10 +74,10 @@ class MusicListAdapter(
         if (previousId == songId) return
         songs.indexOfFirst { it.id == previousId }
             .takeIf { it >= 0 }
-            ?.let(::notifyItemChanged)
+            ?.let { notifyItemChanged(it, PAYLOAD_SELECTION) }
         songs.indexOfFirst { it.id == songId }
             .takeIf { it >= 0 }
-            ?.let(::notifyItemChanged)
+            ?.let { notifyItemChanged(it, PAYLOAD_SELECTION) }
     }
 
     fun loadArtworkInto(imageView: ImageView, song: Song) {
@@ -115,7 +127,19 @@ class MusicListAdapter(
     }
 
     override fun onBindViewHolder(holder: SongViewHolder, position: Int) {
-        holder.bind(songs[position])
+        holder.bind(songs[position], loadArtwork = true)
+    }
+
+    override fun onBindViewHolder(
+        holder: SongViewHolder,
+        position: Int,
+        payloads: MutableList<Any>
+    ) {
+        if (payloads.isEmpty()) {
+            onBindViewHolder(holder, position)
+        } else {
+            holder.bind(songs[position], loadArtwork = false)
+        }
     }
 
     override fun getItemCount(): Int = songs.size
@@ -126,14 +150,14 @@ class MusicListAdapter(
         private val artist: TextView = card.findViewById(R.id.songArtist)
         private val duration: TextView? = card.findViewById(R.id.songDuration)
 
-        fun bind(song: Song) {
+        fun bind(song: Song, loadArtwork: Boolean) {
             title.text = song.title
             artist.text = song.artist
             duration?.text = MusicScannerUtil.formatDuration(song.durationMs)
             title.setTypeface(selectedTypeface, Typeface.BOLD)
             artist.setTypeface(selectedTypeface, Typeface.NORMAL)
             duration?.setTypeface(selectedTypeface, Typeface.NORMAL)
-            loadArtworkInto(albumArt, song)
+            if (loadArtwork || albumArt.tag != song.id) loadArtworkInto(albumArt, song)
 
             if (configuration.layoutMode == LibraryLayoutMode.GRID) {
                 albumArt.post {
@@ -144,9 +168,23 @@ class MusicListAdapter(
             }
 
             applyCardAppearance(song.id == playingSongId)
+            card.contentDescription = context.getString(
+                R.string.song_item_description,
+                song.title,
+                song.artist
+            )
             card.setOnClickListener {
                 val position = bindingAdapterPosition
-                if (position != RecyclerView.NO_POSITION) onSongClicked(position)
+                if (position != RecyclerView.NO_POSITION) onSongClicked(songs[position])
+            }
+            card.setOnLongClickListener {
+                val position = bindingAdapterPosition
+                if (position == RecyclerView.NO_POSITION) {
+                    false
+                } else {
+                    onSongLongClicked(songs[position])
+                    true
+                }
             }
         }
 
@@ -272,6 +310,16 @@ class MusicListAdapter(
         private const val VIEW_GRID_FLAT = 3
         private const val VIEW_GRID_ROUNDED = 4
         private const val VIEW_GRID_COMPACT = 5
+        private const val PAYLOAD_SELECTION = "selection"
+        private const val PAYLOAD_APPEARANCE = "appearance"
+
+        private val SONG_DIFF = object : DiffUtil.ItemCallback<Song>() {
+            override fun areItemsTheSame(oldItem: Song, newItem: Song): Boolean =
+                oldItem.id == newItem.id
+
+            override fun areContentsTheSame(oldItem: Song, newItem: Song): Boolean =
+                oldItem == newItem
+        }
 
         private fun cacheSizeKb(): Int {
             val maxMemoryKb = (Runtime.getRuntime().maxMemory() / 1024L).toInt()

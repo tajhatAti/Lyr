@@ -29,33 +29,45 @@ class LyricsRepository(private val context: Context) {
     }
 
     private fun fetchOnline(song: Song): String? {
+        val cleanedTitle = cleanSearchText(song.sourceTitle)
         val knownArtist = song.artist.takeUnless {
             it.equals(context.getString(R.string.unknown_artist), ignoreCase = true)
+        }?.let(::cleanSearchText)
+
+        val queries = linkedSetOf<String>()
+        if (!knownArtist.isNullOrBlank()) {
+            queries += "track_name=${encode(song.sourceTitle)}&artist_name=${encode(knownArtist)}"
+            if (cleanedTitle != song.sourceTitle) {
+                queries += "track_name=${encode(cleanedTitle)}&artist_name=${encode(knownArtist)}"
+            }
+            queries += "q=${encode("$cleanedTitle $knownArtist")}"
         }
-        val query = if (knownArtist.isNullOrBlank()) {
-            "q=${encode(song.title)}"
-        } else {
-            "track_name=${encode(song.title)}&artist_name=${encode(knownArtist)}"
+        queries += "q=${encode(cleanedTitle)}"
+
+        queries.take(MAX_ONLINE_ATTEMPTS).forEach { query ->
+            val results = requestSearch(query) ?: return null
+            chooseBestSyncedLyrics(results, song, cleanedTitle, knownArtist)?.let { return it }
         }
+        return null
+    }
+
+    private fun requestSearch(query: String): JSONArray? {
         val url = URL("https://lrclib.net/api/search?$query")
         var connection: HttpURLConnection? = null
-
         return try {
             connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 8_000
-                readTimeout = 10_000
+                connectTimeout = 6_000
+                readTimeout = 8_000
                 setRequestProperty(
                     "User-Agent",
                     "LyrMusic/2.0 (com.ahad.lyricsoverlay; Android)"
                 )
                 setRequestProperty("Accept", "application/json")
             }
-
             if (connection.responseCode !in 200..299) return null
             val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val results = JSONArray(body)
-            chooseBestSyncedLyrics(results, song.durationMs)
+            JSONArray(body)
         } catch (_: Exception) {
             null
         } finally {
@@ -63,9 +75,16 @@ class LyricsRepository(private val context: Context) {
         }
     }
 
-    private fun chooseBestSyncedLyrics(results: JSONArray, songDurationMs: Long): String? {
+    private fun chooseBestSyncedLyrics(
+        results: JSONArray,
+        song: Song,
+        cleanedTitle: String,
+        knownArtist: String?
+    ): String? {
         var bestLyrics: String? = null
-        var bestDifference = Long.MAX_VALUE
+        var bestScore = Long.MIN_VALUE
+        val wantedTitle = normalizeForMatch(cleanedTitle)
+        val wantedArtist = normalizeForMatch(knownArtist.orEmpty())
 
         for (index in 0 until results.length()) {
             val item = results.optJSONObject(index) ?: continue
@@ -74,19 +93,54 @@ class LyricsRepository(private val context: Context) {
                 ?: continue
             if (LrcParser.parse(syncedLyrics).isEmpty()) continue
 
+            val resultTitle = normalizeForMatch(item.optString("trackName"))
+            val resultArtist = normalizeForMatch(item.optString("artistName"))
             val resultDurationMs = (item.optDouble("duration", 0.0) * 1_000).toLong()
-            val difference = if (songDurationMs > 0 && resultDurationMs > 0) {
-                abs(songDurationMs - resultDurationMs)
+            val durationDifference = if (song.durationMs > 0L && resultDurationMs > 0L) {
+                abs(song.durationMs - resultDurationMs)
             } else {
                 0L
             }
-            if (difference < bestDifference) {
-                bestDifference = difference
+
+            val titleScore = when {
+                resultTitle == wantedTitle -> 8_000L
+                resultTitle.contains(wantedTitle) || wantedTitle.contains(resultTitle) -> 3_500L
+                else -> continue
+            }
+            var score = titleScore - (durationDifference / 100L)
+            if (wantedArtist.isNotBlank()) {
+                score += when {
+                    resultArtist == wantedArtist -> 3_000L
+                    resultArtist.contains(wantedArtist) || wantedArtist.contains(resultArtist) -> 1_200L
+                    else -> 0L
+                }
+            }
+            if (score > bestScore) {
+                bestScore = score
                 bestLyrics = syncedLyrics
             }
         }
         return bestLyrics
     }
+
+    private fun cleanSearchText(value: String): String = value
+        .replace(Regex("""^\s*\d{1,3}\s*[.\-_)]+\s*"""), "")
+        .replace(
+            Regex(
+                """\s*(?:\(|\[)(official|lyrics?|audio|video|remaster(ed)?|visualizer).*?(?:\)|\])\s*""",
+                RegexOption.IGNORE_CASE
+            ),
+            " "
+        )
+        .replace(Regex("""\s+(feat\.?|ft\.?)\s+.*$""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+        .ifBlank { value.trim() }
+
+    private fun normalizeForMatch(value: String): String = value
+        .lowercase()
+        .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+        .trim()
 
     private fun readCache(song: Song): String? {
         val cacheFile = cacheFile(song)
@@ -108,7 +162,7 @@ class LyricsRepository(private val context: Context) {
     }
 
     private fun cacheFile(song: Song): File {
-        val identity = "${song.title.lowercase()}|${song.artist.lowercase()}|${song.durationMs}"
+        val identity = "${song.sourceTitle.lowercase()}|${song.artist.lowercase()}|${song.durationMs}"
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(identity.toByteArray(Charsets.UTF_8))
             .joinToString("") { byte -> "%02x".format(byte) }
@@ -185,4 +239,8 @@ class LyricsRepository(private val context: Context) {
     }
 
     private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
+
+    companion object {
+        private const val MAX_ONLINE_ATTEMPTS = 4
+    }
 }

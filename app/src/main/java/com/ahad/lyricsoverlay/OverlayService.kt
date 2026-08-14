@@ -90,9 +90,10 @@ class OverlayService : Service(), AppPreferenceListener {
             return
         }
 
-        if (lineIndex != currentLineIndex) {
-            currentLineIndex = lineIndex
-            showLine(lyrics[lineIndex].text, lineIndex)
+        if (lineIndex != currentLineIndex || lyricTextView == null) {
+            if (showLine(lyrics[lineIndex].text, lineIndex)) {
+                currentLineIndex = lineIndex
+            }
         } else if (lyricTextView?.visibility != View.VISIBLE) {
             lyricTextView?.visibility = View.VISIBLE
         }
@@ -108,9 +109,9 @@ class OverlayService : Service(), AppPreferenceListener {
         removeOverlay()
     }
 
-    private fun showLine(text: String, lineIndex: Int) {
-        if (text.isBlank() || !Settings.canDrawOverlays(this)) return
-        val textView = ensureOverlay() ?: return
+    private fun showLine(text: String, lineIndex: Int): Boolean {
+        if (text.isBlank() || !Settings.canDrawOverlays(this)) return false
+        val textView = ensureOverlay() ?: return false
         val generation = ++animationGeneration
         textView.animate().cancel()
         colorAnimator?.cancel()
@@ -118,12 +119,12 @@ class OverlayService : Service(), AppPreferenceListener {
 
         if (textView.text.isNullOrEmpty() || textView.alpha == 0f) {
             setAndAnimateIn(textView, text, lineIndex, generation)
-            return
+            return true
         }
 
         val outgoing = textView.animate()
             .alpha(0f)
-            .setDuration(150L)
+            .setDuration(90L)
             .setInterpolator(AccelerateDecelerateInterpolator())
 
         when (animationStyle) {
@@ -137,6 +138,7 @@ class OverlayService : Service(), AppPreferenceListener {
                 setAndAnimateIn(textView, text, lineIndex, generation)
             }
         }.start()
+        return true
     }
 
     private fun setAndAnimateIn(
@@ -172,7 +174,7 @@ class OverlayService : Service(), AppPreferenceListener {
         }
 
         colorAnimator = ValueAnimator.ofObject(ArgbEvaluator(), startColor, targetColor).apply {
-            duration = 420L
+            duration = 240L
             addUpdateListener { animator ->
                 textView.setTextColor(animator.animatedValue as Int)
             }
@@ -184,7 +186,7 @@ class OverlayService : Service(), AppPreferenceListener {
             .translationY(0f)
             .scaleX(1f)
             .scaleY(1f)
-            .setDuration(360L)
+            .setDuration(230L)
             .setInterpolator(AccelerateDecelerateInterpolator())
             .start()
     }

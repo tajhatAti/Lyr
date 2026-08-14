@@ -30,6 +30,8 @@ import androidx.core.content.ContextCompat
 import androidx.media.session.MediaButtonReceiver
 import java.util.concurrent.Executors
 
+enum class LyricsLoadState { IDLE, SEARCHING, READY, NOT_FOUND }
+
 class PlayerService : Service() {
 
     interface PlayerListener {
@@ -40,6 +42,8 @@ class PlayerService : Service() {
             positionMs: Long,
             durationMs: Long
         )
+
+        fun onLyricsLoadStateChanged(state: LyricsLoadState)
     }
 
     inner class LocalBinder : Binder() {
@@ -72,6 +76,7 @@ class PlayerService : Service() {
     private var overlayBound = false
     private var resolvedLyrics: String? = null
     private var lyricsResolutionComplete = false
+    private var lyricsLoadState = LyricsLoadState.IDLE
 
     private val overlayConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -199,6 +204,7 @@ class PlayerService : Service() {
     fun setListener(newListener: PlayerListener?) {
         listener = newListener
         notifyListener(currentPosition())
+        newListener?.onLyricsLoadStateChanged(lyricsLoadState)
     }
 
     fun playSongs(songs: List<Song>, startIndex: Int) {
@@ -206,6 +212,53 @@ class PlayerService : Service() {
         queue = songs.toList()
         consecutiveErrors = 0
         playAt(startIndex)
+    }
+
+    fun updateSongTitle(songId: Long, title: String) {
+        val cleanedTitle = title.trim()
+        if (cleanedTitle.isEmpty() || queue.none { it.id == songId }) return
+        queue = queue.map { song ->
+            if (song.id == songId) song.copy(title = cleanedTitle) else song
+        }
+        val current = currentSong()
+        if (current?.id == songId) {
+            updateMediaMetadata(current)
+            publishState()
+        }
+    }
+
+    fun synchronizeSongMetadata(scannedSongs: List<Song>) {
+        if (queue.isEmpty() || scannedSongs.isEmpty()) return
+        val updatedById = scannedSongs.associateBy(Song::id)
+        val previousCurrent = currentSong()
+        queue = queue.map { queuedSong -> updatedById[queuedSong.id] ?: queuedSong }
+        val updatedCurrent = currentSong()
+        if (updatedCurrent != null && updatedCurrent != previousCurrent) {
+            updateMediaMetadata(updatedCurrent)
+            if (updatedCurrent.sourceTitle != previousCurrent?.sourceTitle ||
+                updatedCurrent.artist != previousCurrent?.artist
+            ) {
+                resolvedLyrics = null
+                lyricsResolutionComplete = false
+                overlayService?.clearLyrics()
+                resolveLyrics(updatedCurrent)
+            }
+            publishState()
+        }
+    }
+
+    fun refreshOverlayNow() {
+        if (!lyricsResolutionComplete) return
+        resolvedLyrics?.let { overlayService?.setLyrics(it) }
+        overlayService?.updatePlayback(currentPosition(), playing)
+    }
+
+    fun retryLyrics() {
+        val song = currentSong() ?: return
+        resolvedLyrics = null
+        lyricsResolutionComplete = false
+        overlayService?.clearLyrics()
+        resolveLyrics(song)
     }
 
     fun togglePlayPause() {
@@ -290,6 +343,7 @@ class PlayerService : Service() {
         buffering = true
         resolvedLyrics = null
         lyricsResolutionComplete = false
+        updateLyricsLoadState(LyricsLoadState.SEARCHING)
         overlayService?.clearLyrics()
 
         val player = MediaPlayer()
@@ -350,6 +404,7 @@ class PlayerService : Service() {
     }
 
     private fun resolveLyrics(song: Song) {
+        updateLyricsLoadState(LyricsLoadState.SEARCHING)
         val requestGeneration = ++lyricsGeneration
         lyricsExecutor.execute {
             val lyrics = lyricsRepository.findLyrics(song)
@@ -360,8 +415,10 @@ class PlayerService : Service() {
                 resolvedLyrics = lyrics
                 lyricsResolutionComplete = true
                 if (lyrics.isNullOrBlank()) {
+                    updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
                     overlayService?.clearLyrics()
                 } else {
+                    updateLyricsLoadState(LyricsLoadState.READY)
                     overlayService?.setLyrics(lyrics)
                     overlayService?.updatePlayback(currentPosition(), playing)
                 }
@@ -518,6 +575,12 @@ class PlayerService : Service() {
         if (updateNotification) updateNotification()
     }
 
+    private fun updateLyricsLoadState(state: LyricsLoadState) {
+        if (lyricsLoadState == state) return
+        lyricsLoadState = state
+        listener?.onLyricsLoadStateChanged(state)
+    }
+
     private fun notifyListener(position: Long) {
         listener?.onPlayerStateChanged(
             currentSong(),
@@ -537,6 +600,7 @@ class PlayerService : Service() {
         releasePlayer()
         abandonAudioFocus()
         overlayService?.clearLyrics()
+        updateLyricsLoadState(LyricsLoadState.IDLE)
         queue = emptyList()
         currentIndex = -1
         updateMediaSessionState(0L)
@@ -620,6 +684,6 @@ class PlayerService : Service() {
 
         private const val NOTIFICATION_CHANNEL_ID = "music_playback"
         private const val NOTIFICATION_ID = 4102
-        private const val PROGRESS_INTERVAL_MS = 400L
+        private const val PROGRESS_INTERVAL_MS = 250L
     }
 }
