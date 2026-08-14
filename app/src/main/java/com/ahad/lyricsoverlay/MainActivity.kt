@@ -481,7 +481,7 @@ class MainActivity : AppCompatActivity(),
                 InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or
                 InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
             maxLines = 2
-            selectAllOnFocus = false
+            setSelectAllOnFocus(false)
         }
         val inputContainer = FrameLayout(this).apply {
             val horizontalPadding = (24 * resources.displayMetrics.density).toInt()
