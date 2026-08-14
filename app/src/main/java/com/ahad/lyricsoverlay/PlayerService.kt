@@ -22,13 +22,16 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
+import android.support.v4.media.MediaDescriptionCompat
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.media.session.MediaButtonReceiver
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
+import kotlin.random.Random
 
 enum class LyricsLoadState { IDLE, SEARCHING, READY, NOT_FOUND }
 
@@ -44,6 +47,13 @@ class PlayerService : Service() {
         )
 
         fun onLyricsLoadStateChanged(state: LyricsLoadState)
+
+        fun onQueueChanged(queue: List<Song>, currentIndex: Int) = Unit
+
+        fun onPlaybackModeChanged(
+            shuffleEnabled: Boolean,
+            repeatMode: PlayerRepeatMode
+        ) = Unit
     }
 
     inner class LocalBinder : Binder() {
@@ -68,7 +78,9 @@ class PlayerService : Service() {
     private var playbackGeneration = 0
     private var lyricsGeneration = 0
     private var consecutiveErrors = 0
-    private var listener: PlayerListener? = null
+    private val listeners = CopyOnWriteArraySet<PlayerListener>()
+    private var shuffleEnabled = false
+    private var repeatMode = PlayerRepeatMode.OFF
     private var resumeOnFocusGain = false
     private var audioFocusRequest: AudioFocusRequest? = null
 
@@ -139,6 +151,8 @@ class PlayerService : Service() {
         super.onCreate()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         lyricsRepository = LyricsRepository(applicationContext)
+        shuffleEnabled = AppPreferences.playerShuffleEnabled()
+        repeatMode = AppPreferences.playerRepeatMode()
         createNotificationChannel()
         createMediaSession()
 
@@ -201,10 +215,52 @@ class PlayerService : Service() {
         super.onDestroy()
     }
 
-    fun setListener(newListener: PlayerListener?) {
-        listener = newListener
-        notifyListener(currentPosition())
-        newListener?.onLyricsLoadStateChanged(lyricsLoadState)
+    fun addListener(newListener: PlayerListener) {
+        listeners += newListener
+        newListener.onPlayerStateChanged(
+            currentSong(),
+            playing,
+            buffering,
+            currentPosition(),
+            currentDuration()
+        )
+        newListener.onLyricsLoadStateChanged(lyricsLoadState)
+        newListener.onQueueChanged(queue.toList(), currentIndex)
+        newListener.onPlaybackModeChanged(shuffleEnabled, repeatMode)
+    }
+
+    fun removeListener(oldListener: PlayerListener) {
+        listeners -= oldListener
+    }
+
+    fun queueSnapshot(): List<Song> = queue.toList()
+
+    fun currentQueueIndex(): Int = currentIndex
+
+    fun isShuffleEnabled(): Boolean = shuffleEnabled
+
+    fun currentRepeatMode(): PlayerRepeatMode = repeatMode
+
+    fun toggleShuffle(): Boolean {
+        shuffleEnabled = !shuffleEnabled
+        AppPreferences.setPlayerShuffleEnabled(shuffleEnabled)
+        notifyPlaybackModeChanged()
+        return shuffleEnabled
+    }
+
+    fun cycleRepeatMode(): PlayerRepeatMode {
+        repeatMode = when (repeatMode) {
+            PlayerRepeatMode.OFF -> PlayerRepeatMode.ALL
+            PlayerRepeatMode.ALL -> PlayerRepeatMode.ONE
+            PlayerRepeatMode.ONE -> PlayerRepeatMode.OFF
+        }
+        AppPreferences.setPlayerRepeatMode(repeatMode)
+        notifyPlaybackModeChanged()
+        return repeatMode
+    }
+
+    fun playQueueIndex(index: Int) {
+        if (index in queue.indices) playAt(index)
     }
 
     fun playSongs(songs: List<Song>, startIndex: Int) {
@@ -220,6 +276,7 @@ class PlayerService : Service() {
         queue = queue.map { song ->
             if (song.id == songId) song.copy(title = cleanedTitle) else song
         }
+        publishQueue()
         val current = currentSong()
         if (current?.id == songId) {
             updateMediaMetadata(current)
@@ -232,6 +289,7 @@ class PlayerService : Service() {
         val updatedById = scannedSongs.associateBy(Song::id)
         val previousCurrent = currentSong()
         queue = queue.map { queuedSong -> updatedById[queuedSong.id] ?: queuedSong }
+        publishQueue()
         val updatedCurrent = currentSong()
         if (updatedCurrent != null && updatedCurrent != previousCurrent) {
             updateMediaMetadata(updatedCurrent)
@@ -307,13 +365,15 @@ class PlayerService : Service() {
 
     fun next() {
         if (queue.isEmpty()) return
-        playAt(if (currentIndex >= queue.lastIndex) 0 else currentIndex + 1)
+        playAt(nextQueueIndex(wrapAtEnd = true))
     }
 
     fun previous() {
         if (queue.isEmpty()) return
         if (currentPosition() > 5_000L) {
             seekTo(0L)
+        } else if (shuffleEnabled && queue.size > 1) {
+            playAt(randomQueueIndex())
         } else {
             playAt(if (currentIndex <= 0) queue.lastIndex else currentIndex - 1)
         }
@@ -335,6 +395,7 @@ class PlayerService : Service() {
         if (index !in queue.indices) return
         val song = queue[index]
         currentIndex = index
+        publishQueue()
         val generation = ++playbackGeneration
         releasePlayer()
         playerPrepared = false
@@ -372,7 +433,7 @@ class PlayerService : Service() {
             player.setOnCompletionListener {
                 if (generation == playbackGeneration) {
                     consecutiveErrors = 0
-                    next()
+                    handleTrackCompletion()
                 }
             }
             player.setOnErrorListener { _, _, _ ->
@@ -390,6 +451,35 @@ class PlayerService : Service() {
         mediaSession.isActive = true
         promoteToForeground()
         publishState()
+    }
+
+    private fun handleTrackCompletion() {
+        when {
+            repeatMode == PlayerRepeatMode.ONE -> playAt(currentIndex)
+            shuffleEnabled && queue.size > 1 -> playAt(randomQueueIndex())
+            currentIndex < queue.lastIndex -> playAt(currentIndex + 1)
+            repeatMode == PlayerRepeatMode.ALL && queue.isNotEmpty() -> playAt(0)
+            else -> {
+                playing = false
+                buffering = false
+                playWhenPrepared = false
+                abandonAudioFocus()
+                publishState()
+            }
+        }
+    }
+
+    private fun nextQueueIndex(wrapAtEnd: Boolean): Int {
+        if (shuffleEnabled && queue.size > 1) return randomQueueIndex()
+        if (currentIndex < queue.lastIndex) return currentIndex + 1
+        return if (wrapAtEnd) 0 else currentIndex
+    }
+
+    private fun randomQueueIndex(): Int {
+        if (queue.size <= 1) return currentIndex.coerceAtLeast(0)
+        var nextIndex = Random.nextInt(queue.size - 1)
+        if (nextIndex >= currentIndex) nextIndex++
+        return nextIndex.coerceIn(queue.indices)
     }
 
     private fun handlePlaybackError() {
@@ -443,7 +533,7 @@ class PlayerService : Service() {
         val activityIntent = PendingIntent.getActivity(
             this,
             200,
-            Intent(this, MainActivity::class.java).apply {
+            Intent(this, NowPlayingActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             },
             pendingIntentFlags()
@@ -459,6 +549,7 @@ class PlayerService : Service() {
                 override fun onPause() = pausePlayback()
                 override fun onSkipToNext() = next()
                 override fun onSkipToPrevious() = previous()
+                override fun onSkipToQueueItem(id: Long) = playQueueIndex(id.toInt())
                 override fun onSeekTo(pos: Long) = seekTo(pos)
                 override fun onStop() = stopPlaybackAndService()
             })
@@ -490,6 +581,7 @@ class PlayerService : Service() {
             PlaybackStateCompat.ACTION_PLAY_PAUSE or
             PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
             PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
+            PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM or
             PlaybackStateCompat.ACTION_SEEK_TO or
             PlaybackStateCompat.ACTION_STOP
 
@@ -524,7 +616,7 @@ class PlayerService : Service() {
         val contentIntent = PendingIntent.getActivity(
             this,
             201,
-            Intent(this, MainActivity::class.java).apply {
+            Intent(this, NowPlayingActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             },
             pendingIntentFlags()
@@ -578,17 +670,44 @@ class PlayerService : Service() {
     private fun updateLyricsLoadState(state: LyricsLoadState) {
         if (lyricsLoadState == state) return
         lyricsLoadState = state
-        listener?.onLyricsLoadStateChanged(state)
+        listeners.forEach { it.onLyricsLoadStateChanged(state) }
     }
 
     private fun notifyListener(position: Long) {
-        listener?.onPlayerStateChanged(
-            currentSong(),
-            playing,
-            buffering,
-            position,
-            currentDuration()
+        val song = currentSong()
+        val duration = currentDuration()
+        listeners.forEach { listener ->
+            listener.onPlayerStateChanged(
+                song,
+                playing,
+                buffering,
+                position,
+                duration
+            )
+        }
+    }
+
+    private fun publishQueue() {
+        mediaSession.setQueue(
+            queue.mapIndexed { index, song ->
+                MediaSessionCompat.QueueItem(
+                    MediaDescriptionCompat.Builder()
+                        .setMediaId(song.id.toString())
+                        .setTitle(song.title)
+                        .setSubtitle(song.artist)
+                        .setMediaUri(song.contentUri)
+                        .build(),
+                    index.toLong()
+                )
+            }
         )
+        mediaSession.setQueueTitle(getString(R.string.up_next))
+        val snapshot = queue.toList()
+        listeners.forEach { it.onQueueChanged(snapshot, currentIndex) }
+    }
+
+    private fun notifyPlaybackModeChanged() {
+        listeners.forEach { it.onPlaybackModeChanged(shuffleEnabled, repeatMode) }
     }
 
     private fun stopPlaybackAndService() {
@@ -603,6 +722,7 @@ class PlayerService : Service() {
         updateLyricsLoadState(LyricsLoadState.IDLE)
         queue = emptyList()
         currentIndex = -1
+        publishQueue()
         updateMediaSessionState(0L)
         notifyListener(0L)
         stopForeground(true)

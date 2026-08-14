@@ -13,8 +13,10 @@ Lyr is a native Android music player that scans music stored on the device, keep
   - Android 13+: `READ_MEDIA_AUDIO`
   - Android 12 and below: `READ_EXTERNAL_STORAGE`
 - Persistent mini-player with previous, animated play/pause, next, album artwork, seek control, and visible lyric search/ready/not-found status with retry
+- Dedicated full-screen Now Playing experience with large artwork, elapsed/remaining time, scrubbing, previous/play/next, persisted shuffle/repeat modes, and an interactive Up next library queue
+- Android “Open with” integration for audio files shared by a file manager or another app, including metadata/artwork playback without requiring a full library scan
 - Background playback with `PlayerService`, `MediaPlayer`, audio focus handling, and becoming-noisy protection
-- MediaSession notification and lock-screen previous/play-pause/next controls
+- MediaSession notification and lock-screen previous/play-pause/next controls that reopen the full player
 - Time-synced lyrics with this fallback order:
   1. App's local lyrics cache
   2. LRCLIB public API with cleaned title/artist fallback searches and duration-aware candidate matching
@@ -65,18 +67,20 @@ Android may ask you to allow installation from the browser or file manager used 
 
 1. Open Lyr and allow access to music/audio files.
 2. On Android 13+, allow notifications so playback controls can be shown normally.
-3. Tap a song to start playback. If floating lyrics are not allowed yet, use the prompt or the status below the artist to open Android's permission screen.
-4. Enable **Display over other apps** for Lyr and return. The current lyric is retried automatically; playback does not need to be restarted.
-5. Open the settings button in the top-right corner to customize the Home layout, item style, sorting, theme, accent, app font, and lyric appearance.
-6. Touch and hold a song to rename it inside Lyr. Touch and hold it again and choose **Restore original** to remove the override.
-7. Drag the lyric text anywhere on screen; its position is saved automatically.
+3. Tap a song to open the full player. Scrub through the song, change tracks, enable shuffle/repeat, or choose any song from **Up next**.
+4. You can also tap an MP3, M4A, WAV, or FLAC in a file manager and choose **Play with Lyr Music** from Android's app chooser.
+5. If floating lyrics are not allowed yet, use the prompt or the status below the artist to open Android's permission screen. Enable **Display over other apps** for Lyr and return; playback does not need to be restarted.
+6. Open the settings button in the top-right corner to customize the Home layout, item style, sorting, theme, accent, app font, and lyric appearance.
+7. Touch and hold a song to rename it inside Lyr. Touch and hold it again and choose **Restore original** to remove the override.
+8. Drag the lyric text anywhere on screen; its position is saved automatically.
 
 Lyrics are downloaded only when a track needs them. Successful synced lyrics are cached in the app's private storage for future offline playback.
 
 ## Architecture
 
 - `MainActivity` — permissions, MediaStore library, song cards, and mini-player UI
-- `PlayerService` — foreground playback, queue, MediaSession, notification, audio focus, and lyric timing
+- `NowPlayingActivity` — full player, seek/timing controls, playback modes, queue UI, and external audio intents
+- `PlayerService` — foreground playback, queue, repeat/shuffle behavior, MediaSession, notification, audio focus, and lyric timing
 - `OverlayService` — transparent draggable lyric overlay and animations
 - `SettingsActivity` — persisted/live-applied overlay appearance settings
 - `MusicScannerUtil` — local MediaStore audio scanning

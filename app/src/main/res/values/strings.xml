@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">Lyr Music</string>
+    <string name="open_with_lyr_music">Play with Lyr Music</string>
     <string name="library_title">Your music</string>
     <string name="library_subtitle">Local songs with floating synced lyrics</string>
     <string name="library_summary">%1$d songs · %2$s · %3$s</string>
@@ -17,6 +18,32 @@
     <string name="play">Play</string>
     <string name="pause">Pause</string>
     <string name="next">Next</string>
+    <string name="now_playing">Now playing</string>
+    <string name="close_player">Close player</string>
+    <string name="current_album_art">Artwork for the current song</string>
+    <string name="currently_playing">Currently playing</string>
+    <string name="player_waiting">Waiting for a song</string>
+    <string name="choose_song_from_library">Choose a song from your library to start listening.</string>
+    <string name="queue_position">Song %1$d of %2$d</string>
+    <string name="show_queue">Show Up next queue</string>
+    <string name="up_next">Up next</string>
+    <string name="up_next_description">More music from your current library queue</string>
+    <string name="opened_from_another_app">Opened from another app</string>
+    <string name="remaining_time">−%1$s</string>
+    <string name="shuffle_on">Shuffle on</string>
+    <string name="shuffle_off">Shuffle off</string>
+    <string name="repeat_off">Repeat off</string>
+    <string name="repeat_all">Repeat all songs</string>
+    <string name="repeat_one">Repeat current song</string>
+    <string name="queue_song_description">%1$s by %2$s. Tap to play this song next.</string>
+    <string name="queue_current_song_description">%1$s by %2$s. Currently playing.</string>
+    <string name="external_audio">Shared audio</string>
+    <string name="opening_audio">Opening audio…</string>
+    <string name="unable_to_open_audio">Lyr Music could not open this audio file.</string>
+    <plurals name="queue_song_count">
+        <item quantity="one">%d song</item>
+        <item quantity="other">%d songs</item>
+    </plurals>
     <string name="preparing_player">Preparing the music player…</string>
     <string name="unable_to_start_playback">Unable to start playback. Please try again.</string>
     <string name="song_item_description">%1$s by %2$s. Tap to play; touch and hold to rename.</string>

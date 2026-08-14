@@ -73,7 +73,7 @@ class MainActivity : AppCompatActivity(),
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             playerService = (binder as? PlayerService.LocalBinder)?.getService()
             serviceBound = playerService != null
-            playerService?.setListener(this@MainActivity)
+            playerService?.addListener(this@MainActivity)
             pendingSongId?.let { songId ->
                 pendingSongId = null
                 visibleSongs.firstOrNull { it.id == songId }?.let(::playSong)
@@ -120,11 +120,15 @@ class MainActivity : AppCompatActivity(),
     override fun onResume() {
         super.onResume()
         updateLyricsStatus()
-        if (Settings.canDrawOverlays(this)) playerService?.refreshOverlayNow()
+        if (Settings.canDrawOverlays(this)) {
+            playerService?.refreshOverlayNow()
+        } else if (displayedSongId != null) {
+            maybeShowOverlayPermissionPrompt()
+        }
     }
 
     override fun onStop() {
-        playerService?.setListener(null)
+        playerService?.removeListener(this)
         if (serviceBound) {
             try {
                 unbindService(serviceConnection)
@@ -302,6 +306,9 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun setupPlayerControls() {
+        miniPlayer.setOnClickListener {
+            if (displayedSongId != null) openNowPlaying()
+        }
         playPauseButton.setOnClickListener { playerService?.togglePlayPause() }
         findViewById<View>(R.id.previousButton).setOnClickListener { playerService?.previous() }
         findViewById<View>(R.id.nextButton).setOnClickListener { playerService?.next() }
@@ -333,7 +340,6 @@ class MainActivity : AppCompatActivity(),
         if (service == null) {
             pendingSongId = song.id
             Toast.makeText(this, R.string.preparing_player, Toast.LENGTH_SHORT).show()
-            maybeShowOverlayPermissionPrompt()
             return
         }
 
@@ -343,10 +349,15 @@ class MainActivity : AppCompatActivity(),
                 Intent(this, PlayerService::class.java).setAction(PlayerService.ACTION_START)
             )
             service.playSongs(visibleSongs, position)
-            maybeShowOverlayPermissionPrompt()
+            openNowPlaying()
         } catch (_: Exception) {
             Toast.makeText(this, R.string.unable_to_start_playback, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun openNowPlaying() {
+        startActivity(Intent(this, NowPlayingActivity::class.java))
+        overridePendingTransition(R.anim.player_enter, R.anim.player_background_fade)
     }
 
     private fun scanMusicLibrary(preserveAnchor: Boolean = false) {

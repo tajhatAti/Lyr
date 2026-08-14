@@ -80,20 +80,28 @@ class MusicListAdapter(
             ?.let { notifyItemChanged(it, PAYLOAD_SELECTION) }
     }
 
-    fun loadArtworkInto(imageView: ImageView, song: Song) {
+    fun loadArtworkInto(
+        imageView: ImageView,
+        song: Song,
+        placeholderPaddingDp: Float? = null
+    ) {
         imageView.tag = song.id
         artworkCache.get(song.id)?.let { bitmap ->
             showBitmap(imageView, bitmap)
             return
         }
 
-        showPlaceholder(imageView)
+        showPlaceholder(imageView, placeholderPaddingDp)
         artworkExecutor.execute {
             val bitmap = loadArtwork(song)
             if (bitmap != null) artworkCache.put(song.id, bitmap)
             mainHandler.post {
                 if (imageView.tag == song.id) {
-                    if (bitmap != null) showBitmap(imageView, bitmap) else showPlaceholder(imageView)
+                    if (bitmap != null) {
+                        showBitmap(imageView, bitmap)
+                    } else {
+                        showPlaceholder(imageView, placeholderPaddingDp)
+                    }
                 }
             }
         }
@@ -290,8 +298,9 @@ class MusicListAdapter(
         imageView.setImageBitmap(bitmap)
     }
 
-    private fun showPlaceholder(imageView: ImageView) {
-        val padding = if (configuration.layoutMode == LibraryLayoutMode.GRID) dp(28f) else dp(11f)
+    private fun showPlaceholder(imageView: ImageView, paddingDp: Float? = null) {
+        val padding = paddingDp?.let(::dp)
+            ?: if (configuration.layoutMode == LibraryLayoutMode.GRID) dp(28f) else dp(11f)
         imageView.setPadding(padding, padding, padding, padding)
         imageView.scaleType = ImageView.ScaleType.CENTER_INSIDE
         imageView.imageTintList = ColorStateList.valueOf(configuration.accentColor)

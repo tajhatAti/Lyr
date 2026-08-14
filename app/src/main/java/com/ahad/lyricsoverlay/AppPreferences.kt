@@ -10,6 +10,7 @@ enum class LibraryLayoutMode { LIST, GRID }
 enum class LibraryItemStyle { FLAT, ROUNDED, COMPACT }
 enum class LibrarySortOrder { TITLE, ARTIST, DATE_ADDED, DURATION }
 enum class AppThemeMode { SYSTEM, LIGHT, DARK }
+enum class PlayerRepeatMode { OFF, ALL, ONE }
 
 enum class AppFont(val displayName: String, @FontRes val resourceId: Int) {
     ROBOTO("Roboto", R.font.roboto),
@@ -45,6 +46,8 @@ object AppPreferences {
     const val KEY_ITEM_STYLE = "library_item_style"
     const val KEY_SORT_ORDER = "library_sort_order"
     const val KEY_APP_FONT = "app_font"
+    const val KEY_PLAYER_SHUFFLE = "player_shuffle"
+    const val KEY_PLAYER_REPEAT_MODE = "player_repeat_mode"
 
     const val KEY_OVERLAY_FONT_SIZE = "overlay_font_size"
     const val KEY_OVERLAY_FONT_STYLE = "overlay_font_style"
@@ -137,6 +140,19 @@ object AppPreferences {
 
     fun setAppFont(value: AppFont) =
         preferences.edit().putString(KEY_APP_FONT, value.name).apply()
+
+    fun playerShuffleEnabled(): Boolean = preferences.getBoolean(KEY_PLAYER_SHUFFLE, false)
+
+    fun setPlayerShuffleEnabled(value: Boolean) = preferences.edit()
+        .putBoolean(KEY_PLAYER_SHUFFLE, value)
+        .apply()
+
+    fun playerRepeatMode(): PlayerRepeatMode =
+        enumValue(KEY_PLAYER_REPEAT_MODE, PlayerRepeatMode.OFF)
+
+    fun setPlayerRepeatMode(value: PlayerRepeatMode) = preferences.edit()
+        .putString(KEY_PLAYER_REPEAT_MODE, value.name)
+        .apply()
 
     fun songTitle(songId: Long): String? = preferences
         .getString(songTitleKey(songId), null)
