@@ -29,6 +29,11 @@
             android:exported="false" />
 
         <activity
+            android:name=".LyricsActivity"
+            android:exported="false"
+            android:parentActivityName=".NowPlayingActivity" />
+
+        <activity
             android:name=".NowPlayingActivity"
             android:exported="true"
             android:grantUriPermissions="true"

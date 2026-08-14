@@ -48,6 +48,10 @@ class PlayerService : Service() {
 
         fun onLyricsLoadStateChanged(state: LyricsLoadState)
 
+        fun onLyricsContentChanged(result: LyricsResult?) = Unit
+
+        fun onSleepTimerChanged(endAtMs: Long, afterCurrentSong: Boolean) = Unit
+
         fun onQueueChanged(queue: List<Song>, currentIndex: Int) = Unit
 
         fun onPlaybackModeChanged(
@@ -81,12 +85,14 @@ class PlayerService : Service() {
     private val listeners = CopyOnWriteArraySet<PlayerListener>()
     private var shuffleEnabled = false
     private var repeatMode = PlayerRepeatMode.OFF
+    private var sleepTimerEndAtMs = 0L
+    private var sleepAfterCurrentSong = false
     private var resumeOnFocusGain = false
     private var audioFocusRequest: AudioFocusRequest? = null
 
     private var overlayService: OverlayService? = null
     private var overlayBound = false
-    private var resolvedLyrics: String? = null
+    private var resolvedLyrics: LyricsResult? = null
     private var lyricsResolutionComplete = false
     private var lyricsLoadState = LyricsLoadState.IDLE
 
@@ -95,7 +101,8 @@ class PlayerService : Service() {
             overlayService = (service as? OverlayService.LocalBinder)?.getService()
             overlayBound = overlayService != null
             if (lyricsResolutionComplete) {
-                resolvedLyrics?.let { overlayService?.setLyrics(it) } ?: overlayService?.clearLyrics()
+                resolvedLyrics?.rawLrc?.let { overlayService?.setLyrics(it) }
+                    ?: overlayService?.clearLyrics()
             }
             overlayService?.updatePlayback(currentPosition(), playing)
         }
@@ -139,6 +146,7 @@ class PlayerService : Service() {
 
     private val progressRunnable = object : Runnable {
         override fun run() {
+            checkSleepTimer()
             val position = currentPosition()
             overlayService?.updatePlayback(position, playing)
             updateMediaSessionState(position)
@@ -153,6 +161,9 @@ class PlayerService : Service() {
         lyricsRepository = LyricsRepository(applicationContext)
         shuffleEnabled = AppPreferences.playerShuffleEnabled()
         repeatMode = AppPreferences.playerRepeatMode()
+        sleepTimerEndAtMs = AppPreferences.sleepTimerEndAtMs()
+        sleepAfterCurrentSong = AppPreferences.sleepAfterCurrentSong()
+        if (sleepTimerEndAtMs == 0L && !sleepAfterCurrentSong) AppPreferences.clearSleepTimer()
         createNotificationChannel()
         createMediaSession()
 
@@ -225,6 +236,8 @@ class PlayerService : Service() {
             currentDuration()
         )
         newListener.onLyricsLoadStateChanged(lyricsLoadState)
+        newListener.onLyricsContentChanged(resolvedLyrics)
+        newListener.onSleepTimerChanged(sleepTimerEndAtMs, sleepAfterCurrentSong)
         newListener.onQueueChanged(queue.toList(), currentIndex)
         newListener.onPlaybackModeChanged(shuffleEnabled, repeatMode)
     }
@@ -257,6 +270,32 @@ class PlayerService : Service() {
         AppPreferences.setPlayerRepeatMode(repeatMode)
         notifyPlaybackModeChanged()
         return repeatMode
+    }
+
+    fun sleepTimerEndAtMs(): Long = sleepTimerEndAtMs
+
+    fun sleepsAfterCurrentSong(): Boolean = sleepAfterCurrentSong
+
+    fun setSleepTimerMinutes(minutes: Int): Boolean {
+        if (minutes !in 1..MAX_SLEEP_TIMER_MINUTES) return false
+        sleepTimerEndAtMs = System.currentTimeMillis() + minutes * 60_000L
+        sleepAfterCurrentSong = false
+        AppPreferences.setSleepTimer(sleepTimerEndAtMs)
+        notifySleepTimerChanged()
+        return true
+    }
+
+    fun setSleepAfterCurrentSong(): Boolean {
+        if (currentSong() == null) return false
+        sleepTimerEndAtMs = 0L
+        sleepAfterCurrentSong = true
+        AppPreferences.setSleepAfterCurrentSong()
+        notifySleepTimerChanged()
+        return true
+    }
+
+    fun cancelSleepTimer() {
+        clearSleepTimerState()
     }
 
     fun playQueueIndex(index: Int) {
@@ -294,11 +333,11 @@ class PlayerService : Service() {
         if (updatedCurrent != null && updatedCurrent != previousCurrent) {
             updateMediaMetadata(updatedCurrent)
             if (updatedCurrent.sourceTitle != previousCurrent?.sourceTitle ||
-                updatedCurrent.artist != previousCurrent?.artist
+                updatedCurrent.artist != previousCurrent?.artist ||
+                updatedCurrent.album != previousCurrent?.album ||
+                updatedCurrent.durationMs != previousCurrent?.durationMs
             ) {
-                resolvedLyrics = null
-                lyricsResolutionComplete = false
-                overlayService?.clearLyrics()
+                clearResolvedLyrics()
                 resolveLyrics(updatedCurrent)
             }
             publishState()
@@ -307,16 +346,79 @@ class PlayerService : Service() {
 
     fun refreshOverlayNow() {
         if (!lyricsResolutionComplete) return
-        resolvedLyrics?.let { overlayService?.setLyrics(it) }
+        resolvedLyrics?.rawLrc?.let { overlayService?.setLyrics(it) }
         overlayService?.updatePlayback(currentPosition(), playing)
     }
 
+    fun currentLyricsSnapshot(): LyricsResult? = resolvedLyrics
+
     fun retryLyrics() {
         val song = currentSong() ?: return
-        resolvedLyrics = null
-        lyricsResolutionComplete = false
-        overlayService?.clearLyrics()
+        clearResolvedLyrics()
         resolveLyrics(song)
+    }
+
+    /** Saves pasted or edited LRC in private app storage and immediately refreshes every surface. */
+    fun saveUserLyrics(rawLrc: String, source: LyricsSource): Boolean {
+        val song = currentSong() ?: return false
+        if (source != LyricsSource.USER_EDITED && source != LyricsSource.IMPORTED_FILE) return false
+        if (LrcParser.parse(rawLrc).isEmpty()) return false
+        val requestGeneration = ++lyricsGeneration
+        updateLyricsLoadState(LyricsLoadState.SEARCHING)
+        lyricsExecutor.execute {
+            val saved = lyricsRepository.saveUserLyrics(song, rawLrc, source)
+            mainHandler.post {
+                if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
+                if (saved) {
+                    applyLyricsResult(LyricsResult(rawLrc.trim(), source))
+                } else {
+                    updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
+                }
+            }
+        }
+        return true
+    }
+
+    /** Makes an explicitly selected online version authoritative and available offline. */
+    fun useOnlineLyrics(candidate: OnlineLyricsCandidate): Boolean {
+        val song = currentSong() ?: return false
+        if (LrcParser.parse(candidate.syncedLyrics).isEmpty()) return false
+        val requestGeneration = ++lyricsGeneration
+        updateLyricsLoadState(LyricsLoadState.SEARCHING)
+        lyricsExecutor.execute {
+            val saved = lyricsRepository.saveOnlineSelection(song, candidate)
+            mainHandler.post {
+                if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
+                if (saved) {
+                    applyLyricsResult(
+                        LyricsResult(
+                            candidate.syncedLyrics,
+                            LyricsSource.ONLINE_SELECTED,
+                            "LRCLIB",
+                            candidate.id
+                        )
+                    )
+                } else {
+                    updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
+                }
+            }
+        }
+        return true
+    }
+
+    /** Removes only the explicit user choice/edit, then restores cache, sidecar, or online lookup. */
+    fun restoreAutomaticLyrics() {
+        val song = currentSong() ?: return
+        val requestGeneration = ++lyricsGeneration
+        updateLyricsLoadState(LyricsLoadState.SEARCHING)
+        lyricsExecutor.execute {
+            lyricsRepository.deleteUserLyrics(song)
+            val restored = lyricsRepository.findLyrics(song)
+            mainHandler.post {
+                if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
+                applyLyricsResult(restored)
+            }
+        }
     }
 
     fun togglePlayPause() {
@@ -402,10 +504,8 @@ class PlayerService : Service() {
         playWhenPrepared = true
         playing = false
         buffering = true
-        resolvedLyrics = null
-        lyricsResolutionComplete = false
+        clearResolvedLyrics()
         updateLyricsLoadState(LyricsLoadState.SEARCHING)
-        overlayService?.clearLyrics()
 
         val player = MediaPlayer()
         mediaPlayer = player
@@ -454,6 +554,15 @@ class PlayerService : Service() {
     }
 
     private fun handleTrackCompletion() {
+        if (sleepAfterCurrentSong) {
+            clearSleepTimerState()
+            playing = false
+            buffering = false
+            playWhenPrepared = false
+            abandonAudioFocus()
+            publishState()
+            return
+        }
         when {
             repeatMode == PlayerRepeatMode.ONE -> playAt(currentIndex)
             shuffleEnabled && queue.size > 1 -> playAt(randomQueueIndex())
@@ -502,18 +611,30 @@ class PlayerService : Service() {
                 if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) {
                     return@post
                 }
-                resolvedLyrics = lyrics
-                lyricsResolutionComplete = true
-                if (lyrics.isNullOrBlank()) {
-                    updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
-                    overlayService?.clearLyrics()
-                } else {
-                    updateLyricsLoadState(LyricsLoadState.READY)
-                    overlayService?.setLyrics(lyrics)
-                    overlayService?.updatePlayback(currentPosition(), playing)
-                }
+                applyLyricsResult(lyrics)
             }
         }
+    }
+
+    private fun applyLyricsResult(result: LyricsResult?) {
+        resolvedLyrics = result
+        lyricsResolutionComplete = true
+        listeners.forEach { it.onLyricsContentChanged(result) }
+        if (result == null) {
+            updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
+            overlayService?.clearLyrics()
+        } else {
+            updateLyricsLoadState(LyricsLoadState.READY)
+            overlayService?.setLyrics(result.rawLrc)
+            overlayService?.updatePlayback(currentPosition(), playing)
+        }
+    }
+
+    private fun clearResolvedLyrics() {
+        resolvedLyrics = null
+        lyricsResolutionComplete = false
+        listeners.forEach { it.onLyricsContentChanged(null) }
+        overlayService?.clearLyrics()
     }
 
     private fun releasePlayer() {
@@ -710,6 +831,23 @@ class PlayerService : Service() {
         listeners.forEach { it.onPlaybackModeChanged(shuffleEnabled, repeatMode) }
     }
 
+    private fun checkSleepTimer() {
+        if (sleepTimerEndAtMs <= 0L || System.currentTimeMillis() < sleepTimerEndAtMs) return
+        clearSleepTimerState()
+        pausePlayback()
+    }
+
+    private fun clearSleepTimerState() {
+        sleepTimerEndAtMs = 0L
+        sleepAfterCurrentSong = false
+        AppPreferences.clearSleepTimer()
+        notifySleepTimerChanged()
+    }
+
+    private fun notifySleepTimerChanged() {
+        listeners.forEach { it.onSleepTimerChanged(sleepTimerEndAtMs, sleepAfterCurrentSong) }
+    }
+
     private fun stopPlaybackAndService() {
         playing = false
         buffering = false
@@ -718,7 +856,8 @@ class PlayerService : Service() {
         lyricsGeneration++
         releasePlayer()
         abandonAudioFocus()
-        overlayService?.clearLyrics()
+        clearSleepTimerState()
+        clearResolvedLyrics()
         updateLyricsLoadState(LyricsLoadState.IDLE)
         queue = emptyList()
         currentIndex = -1
@@ -805,5 +944,6 @@ class PlayerService : Service() {
         private const val NOTIFICATION_CHANNEL_ID = "music_playback"
         private const val NOTIFICATION_ID = 4102
         private const val PROGRESS_INTERVAL_MS = 250L
+        private const val MAX_SLEEP_TIMER_MINUTES = 720
     }
 }

@@ -48,6 +48,8 @@ object AppPreferences {
     const val KEY_APP_FONT = "app_font"
     const val KEY_PLAYER_SHUFFLE = "player_shuffle"
     const val KEY_PLAYER_REPEAT_MODE = "player_repeat_mode"
+    const val KEY_SLEEP_TIMER_END_AT = "sleep_timer_end_at"
+    const val KEY_SLEEP_AFTER_CURRENT_SONG = "sleep_after_current_song"
 
     const val KEY_OVERLAY_FONT_SIZE = "overlay_font_size"
     const val KEY_OVERLAY_FONT_STYLE = "overlay_font_style"
@@ -152,6 +154,28 @@ object AppPreferences {
 
     fun setPlayerRepeatMode(value: PlayerRepeatMode) = preferences.edit()
         .putString(KEY_PLAYER_REPEAT_MODE, value.name)
+        .apply()
+
+    fun sleepTimerEndAtMs(): Long = preferences.getLong(KEY_SLEEP_TIMER_END_AT, 0L)
+        .takeIf { it > System.currentTimeMillis() }
+        ?: 0L
+
+    fun sleepAfterCurrentSong(): Boolean =
+        preferences.getBoolean(KEY_SLEEP_AFTER_CURRENT_SONG, false)
+
+    fun setSleepTimer(endAtMs: Long) = preferences.edit()
+        .putLong(KEY_SLEEP_TIMER_END_AT, endAtMs.coerceAtLeast(0L))
+        .putBoolean(KEY_SLEEP_AFTER_CURRENT_SONG, false)
+        .apply()
+
+    fun setSleepAfterCurrentSong() = preferences.edit()
+        .remove(KEY_SLEEP_TIMER_END_AT)
+        .putBoolean(KEY_SLEEP_AFTER_CURRENT_SONG, true)
+        .apply()
+
+    fun clearSleepTimer() = preferences.edit()
+        .remove(KEY_SLEEP_TIMER_END_AT)
+        .remove(KEY_SLEEP_AFTER_CURRENT_SONG)
         .apply()
 
     fun songTitle(songId: Long): String? = preferences

@@ -16,12 +16,14 @@ object ExternalSongResolver {
 
         var metadataTitle: String? = null
         var metadataArtist: String? = null
+        var metadataAlbum: String? = null
         var durationMs = 0L
         val retriever = MediaMetadataRetriever()
         try {
             retriever.setDataSource(context, uri)
             metadataTitle = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
             metadataArtist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
+            metadataAlbum = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
             durationMs = retriever
                 .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
                 ?.toLongOrNull()
@@ -45,6 +47,8 @@ object ExternalSongResolver {
         val visibleTitle = sourceTitle
         val artist = metadataArtist?.trim().takeUnless { it.isNullOrEmpty() }
             ?: context.getString(R.string.unknown_artist)
+        val album = metadataAlbum?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: context.getString(R.string.unknown_album)
         val stableId = stableExternalId(uri)
 
         return Song(
@@ -52,6 +56,7 @@ object ExternalSongResolver {
             title = visibleTitle,
             sourceTitle = sourceTitle,
             artist = artist,
+            album = album,
             durationMs = durationMs,
             dateAddedSeconds = System.currentTimeMillis() / 1_000L,
             contentUri = uri,

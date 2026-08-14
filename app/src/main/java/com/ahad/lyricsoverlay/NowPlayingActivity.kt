@@ -8,6 +8,7 @@ import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
+import android.view.MotionEvent
 import android.view.View
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -45,6 +46,9 @@ class NowPlayingActivity : AppCompatActivity(),
     private lateinit var playPauseButton: ImageButton
     private lateinit var shuffleButton: ImageButton
     private lateinit var repeatButton: ImageButton
+    private lateinit var lyricsEntryCard: MaterialCardView
+    private lateinit var lyricsEntryIcon: ImageView
+    private lateinit var lyricsEntryPreview: TextView
     private lateinit var upNextCard: View
     private lateinit var upNextSubtitle: TextView
     private lateinit var queueCountText: TextView
@@ -64,6 +68,9 @@ class NowPlayingActivity : AppCompatActivity(),
     private var shuffleEnabled = false
     private var repeatMode = PlayerRepeatMode.OFF
     private var externalHandledUri: String? = null
+    private var previewLyrics: List<LrcLine> = emptyList()
+    private var previewLineIndex = -1
+    private var sleepTimerActive = false
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -197,9 +204,34 @@ class NowPlayingActivity : AppCompatActivity(),
             updateTimeLabels(clampedPosition)
         }
         playerService?.currentQueueIndex()?.let(queueAdapter::setCurrentIndex)
+        updateLyricsPreview(positionMs)
     }
 
-    override fun onLyricsLoadStateChanged(state: LyricsLoadState) = Unit
+    override fun onLyricsLoadStateChanged(state: LyricsLoadState) {
+        when (state) {
+            LyricsLoadState.IDLE -> lyricsEntryPreview.setText(R.string.lyrics_choose_song)
+            LyricsLoadState.SEARCHING -> lyricsEntryPreview.setText(R.string.lyrics_loading)
+            LyricsLoadState.NOT_FOUND -> lyricsEntryPreview.setText(R.string.lyrics_not_found_open_center)
+            LyricsLoadState.READY -> if (previewLyrics.isEmpty()) {
+                lyricsEntryPreview.setText(R.string.open_live_lyrics)
+            }
+        }
+    }
+
+    override fun onLyricsContentChanged(result: LyricsResult?) {
+        previewLyrics = result?.rawLrc?.let(LrcParser::parse).orEmpty()
+        previewLineIndex = -1
+        if (previewLyrics.isEmpty() && result != null) {
+            lyricsEntryPreview.setText(R.string.open_live_lyrics)
+        } else {
+            updateLyricsPreview(0L, force = true)
+        }
+    }
+
+    override fun onSleepTimerChanged(endAtMs: Long, afterCurrentSong: Boolean) {
+        sleepTimerActive = afterCurrentSong || endAtMs > System.currentTimeMillis()
+        updateSleepTimerIcon()
+    }
 
     override fun onQueueChanged(queue: List<Song>, currentIndex: Int) {
         queueAdapter.updateQueue(queue, currentIndex)
@@ -267,6 +299,9 @@ class NowPlayingActivity : AppCompatActivity(),
         playPauseButton = findViewById(R.id.fullPlayPauseButton)
         shuffleButton = findViewById(R.id.shuffleButton)
         repeatButton = findViewById(R.id.repeatButton)
+        lyricsEntryCard = findViewById(R.id.lyricsEntryCard)
+        lyricsEntryIcon = findViewById(R.id.lyricsEntryIcon)
+        lyricsEntryPreview = findViewById(R.id.lyricsEntryPreview)
         upNextCard = findViewById(R.id.upNextCard)
         upNextSubtitle = findViewById(R.id.upNextSubtitle)
         queueCountText = findViewById(R.id.queueCountText)
@@ -292,6 +327,12 @@ class NowPlayingActivity : AppCompatActivity(),
                 scrollView.smoothScrollTo(0, playerContent.top + upNextCard.top)
             }
         }
+        findViewById<View>(R.id.showSleepTimerButton).setOnClickListener {
+            SleepTimerDialog.show(this, playerService)
+        }
+        lyricsEntryCard.setOnClickListener { openLyricsCenter() }
+        attachLyricsSwipe(lyricsEntryCard)
+        attachLyricsSwipe(albumArt)
         findViewById<View>(R.id.fullPreviousButton).setOnClickListener {
             playerService?.previous()
         }
@@ -328,6 +369,56 @@ class NowPlayingActivity : AppCompatActivity(),
                 userSeeking = false
             }
         })
+    }
+
+    private fun updateLyricsPreview(positionMs: Long, force: Boolean = false) {
+        if (previewLyrics.isEmpty()) return
+        val index = LrcParser.lineIndexAt(previewLyrics, positionMs)
+        if (!force && index == previewLineIndex) return
+        previewLineIndex = index
+        lyricsEntryPreview.text = if (index in previewLyrics.indices) {
+            previewLyrics[index].text
+        } else {
+            previewLyrics.first().text
+        }
+        lyricsEntryPreview.animate().cancel()
+        lyricsEntryPreview.alpha = 0.35f
+        lyricsEntryPreview.translationY = dp(5f).toFloat()
+        lyricsEntryPreview.animate()
+            .alpha(1f)
+            .translationY(0f)
+            .setDuration(220L)
+            .start()
+    }
+
+    private fun openLyricsCenter() {
+        if (displayedSongId == null) {
+            Toast.makeText(this, R.string.no_song_for_lyrics, Toast.LENGTH_SHORT).show()
+            return
+        }
+        startActivity(Intent(this, LyricsActivity::class.java))
+        overridePendingTransition(R.anim.lyrics_enter, R.anim.player_background_fade)
+    }
+
+    private fun attachLyricsSwipe(view: View) {
+        var downY = 0f
+        view.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downY = event.rawY
+                    false
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (downY - event.rawY > dp(56f).toFloat()) {
+                        openLyricsCenter()
+                        true
+                    } else {
+                        false
+                    }
+                }
+                else -> false
+            }
+        }
     }
 
     private fun sizeArtworkForScreen() {
@@ -400,6 +491,17 @@ class NowPlayingActivity : AppCompatActivity(),
         )
     }
 
+    private fun updateSleepTimerIcon() {
+        if (!::playerRoot.isInitialized) return
+        val button = findViewById<ImageButton>(R.id.showSleepTimerButton)
+        button.imageTintList = ColorStateList.valueOf(
+            if (sleepTimerActive) customization.accentColor
+            else ContextCompat.getColor(this, R.color.text_muted)
+        )
+        button.animate().cancel()
+        button.animate().rotation(if (sleepTimerActive) 12f else 0f).setDuration(180L).start()
+    }
+
     private fun applyPlayerAccent() {
         val accent = customization.accentColor
         playPauseCard.setCardBackgroundColor(accent)
@@ -408,6 +510,9 @@ class NowPlayingActivity : AppCompatActivity(),
         )
         playPauseButton.imageTintList = ColorStateList.valueOf(AppUi.contrastTextColor(accent))
         artworkCard.setStrokeColor(ColorUtils.setAlphaComponent(accent, 90))
+        lyricsEntryCard.setStrokeColor(ColorUtils.setAlphaComponent(accent, 65))
+        lyricsEntryIcon.imageTintList = ColorStateList.valueOf(accent)
+        updateSleepTimerIcon()
         updatePlaybackModeButtons()
     }
 

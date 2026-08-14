@@ -50,6 +50,17 @@ object LrcParser {
             .sortedBy { it.timestampMs }
     }
 
+    /** Creates the plain-lyrics payload required when a timed LRC is published. */
+    fun toPlainLyrics(rawLrc: String): String = rawLrc
+        .lineSequence()
+        .map { it.trim().removePrefix("\uFEFF") }
+        .filterNot { line ->
+            line.isBlank() || metadataRegex.matches(line) || offsetRegex.matches(line)
+        }
+        .map { timestampRegex.replace(it, "").trim() }
+        .filter { it.isNotBlank() }
+        .joinToString("\n")
+
     fun lineIndexAt(lines: List<LrcLine>, positionMs: Long): Int {
         if (lines.isEmpty() || positionMs < lines.first().timestampMs) return -1
 

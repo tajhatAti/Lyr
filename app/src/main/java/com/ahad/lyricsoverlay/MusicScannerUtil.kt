@@ -27,6 +27,7 @@ object MusicScannerUtil {
             MediaStore.Audio.Media._ID,
             MediaStore.Audio.Media.TITLE,
             MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM,
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.DATE_ADDED,
             MediaStore.Audio.Media.ALBUM_ID,
@@ -55,6 +56,7 @@ object MusicScannerUtil {
                 val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
                 val titleColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
                 val artistColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+                val albumColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
                 val durationColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
                 val dateAddedColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
                 val albumIdColumn = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID)
@@ -82,6 +84,7 @@ object MusicScannerUtil {
 
                     val rawTitle = cursor.getString(titleColumn).orEmpty().trim()
                     val rawArtist = cursor.getString(artistColumn).orEmpty().trim()
+                    val rawAlbum = cursor.getString(albumColumn).orEmpty().trim()
                     val albumId = cursor.getLong(albumIdColumn)
                     val duration = cursor.getLong(durationColumn).coerceAtLeast(0L)
                     val dateAdded = cursor.getLong(dateAddedColumn).coerceAtLeast(0L)
@@ -102,6 +105,9 @@ object MusicScannerUtil {
                         artist = rawArtist
                             .takeUnless { it.isBlank() || it.equals("<unknown>", ignoreCase = true) }
                             ?: context.getString(R.string.unknown_artist),
+                        album = rawAlbum
+                            .takeUnless { it.isBlank() || it.equals("<unknown>", ignoreCase = true) }
+                            ?: context.getString(R.string.unknown_album),
                         durationMs = duration,
                         dateAddedSeconds = dateAdded,
                         contentUri = contentUri,
