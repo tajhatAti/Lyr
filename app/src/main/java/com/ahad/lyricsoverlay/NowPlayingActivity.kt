@@ -24,6 +24,7 @@ import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
 import com.google.android.material.card.MaterialCardView
 import java.util.concurrent.Executors
+import kotlin.math.abs
 import kotlin.math.min
 
 class NowPlayingActivity : AppCompatActivity(),
@@ -401,22 +402,35 @@ class NowPlayingActivity : AppCompatActivity(),
     }
 
     private fun attachLyricsSwipe(view: View) {
+        var downX = 0f
         var downY = 0f
-        view.setOnTouchListener { _, event ->
+        view.setOnTouchListener { touchedView, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
                     downY = event.rawY
-                    false
+                    touchedView.parent?.requestDisallowInterceptTouchEvent(true)
+                    touchedView.isPressed = true
+                    true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (downY - event.rawY > dp(56f).toFloat()) {
+                    touchedView.parent?.requestDisallowInterceptTouchEvent(false)
+                    touchedView.isPressed = false
+                    val horizontalDistance = abs(event.rawX - downX)
+                    val upwardDistance = downY - event.rawY
+                    if (upwardDistance > dp(56f).toFloat() && upwardDistance > horizontalDistance) {
                         openLyricsCenter()
-                        true
                     } else {
-                        false
+                        touchedView.performClick()
                     }
+                    true
                 }
-                else -> false
+                MotionEvent.ACTION_CANCEL -> {
+                    touchedView.parent?.requestDisallowInterceptTouchEvent(false)
+                    touchedView.isPressed = false
+                    true
+                }
+                else -> true
             }
         }
     }

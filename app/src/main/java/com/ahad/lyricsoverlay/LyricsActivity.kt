@@ -723,6 +723,9 @@ class LyricsActivity : AppCompatActivity(),
             }
         }
         updateOverlayButton()
+        playerService?.let { service ->
+            onSleepTimerChanged(service.sleepTimerEndAtMs(), service.sleepsAfterCurrentSong())
+        }
     }
 
     private fun closeLyrics() {
