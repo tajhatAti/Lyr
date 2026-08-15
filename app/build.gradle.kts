@@ -55,3 +55,8 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
 }
+
+// The user-facing GitHub build command also executes JVM regression tests.
+tasks.matching { it.name == "assembleDebug" }.configureEach {
+    dependsOn("testDebugUnitTest")
+}
