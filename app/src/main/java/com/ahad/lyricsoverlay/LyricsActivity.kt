@@ -812,7 +812,7 @@ class LyricsActivity : AppCompatActivity(),
             return
         }
         val source = when {
-            aiDraftPending || playerService?.activeLyricsSource() == LyricsSource.AI_GENERATED -> {
+            aiDraftPending || currentLyrics?.source == LyricsSource.AI_GENERATED -> {
                 LyricsSource.AI_GENERATED
             }
             importedPending -> LyricsSource.IMPORTED_FILE
