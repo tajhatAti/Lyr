@@ -370,7 +370,10 @@ class PlayerService : Service() {
     /** Saves pasted or edited LRC in private app storage and immediately refreshes every surface. */
     fun saveUserLyrics(rawLrc: String, source: LyricsSource): Boolean {
         val song = currentSong() ?: return false
-        if (source != LyricsSource.USER_EDITED && source != LyricsSource.IMPORTED_FILE) return false
+        if (source != LyricsSource.USER_EDITED &&
+            source != LyricsSource.AI_GENERATED &&
+            source != LyricsSource.IMPORTED_FILE
+        ) return false
         if (LrcParser.parse(rawLrc).isEmpty()) return false
         val requestGeneration = ++lyricsGeneration
         updateLyricsLoadState(LyricsLoadState.SEARCHING)
@@ -400,13 +403,18 @@ class PlayerService : Service() {
         if (shiftedLrc == previous.rawLrc || LrcParser.parse(shiftedLrc).isEmpty()) return false
 
         val requestGeneration = ++lyricsGeneration
+        val persistedSource = when (previous.source) {
+            LyricsSource.AI_GENERATED -> LyricsSource.AI_GENERATED
+            LyricsSource.IMPORTED_FILE -> LyricsSource.IMPORTED_FILE
+            else -> LyricsSource.USER_EDITED
+        }
         val shiftedResult = previous.copy(
             rawLrc = shiftedLrc,
-            source = LyricsSource.USER_EDITED
+            source = persistedSource
         )
         applyLyricsResult(shiftedResult)
         lyricsExecutor.execute {
-            val saved = lyricsRepository.saveUserLyrics(song, shiftedLrc, LyricsSource.USER_EDITED)
+            val saved = lyricsRepository.saveUserLyrics(song, shiftedLrc, persistedSource)
             mainHandler.post {
                 if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
                 if (!saved) applyLyricsResult(previous)

@@ -22,9 +22,10 @@ Lyr is a native Android music player that scans music stored on the device, keep
   2. Downloaded private cache
   3. Same-name local `.lrc` sidecar when Android storage access allows it
   4. LRCLIB public API with cleaned title/artist fallback searches and duration-aware candidate matching
-- A three-section Lyrics Center for live line-tap seeking, multiple LRCLIB results, offline selection, `.lrc` import, editing, private save/restore, and separately confirmed optional publication
+- A four-section Lyrics Center for live line-tap seeking, multiple LRCLIB results, offline selection, AI Sync, `.lrc` import, editing, private save/restore, and separately confirmed optional publication
 - Bounded automatic timestamp fitting when the selected LRCLIB recording and local song have different durations, plus persistent whole-song early/later correction controls
-- A plain-lyrics workflow for Bengali and other unavailable songs: paste one lyric per line, play the song, and tap **Sync next line** at each vocal cue
+- Optional cloud AI workflow for **Audio only → Lyrics + Sync** and **Paste lyrics → Auto Sync**, with an explicit upload disclosure, progress, cancellation, phrase start/end timing, gap-aware blanking, preview, editing, and reviewed private save
+- A manual plain-lyrics fallback for Bengali and other unavailable songs: paste one lyric per line, play the song, and tap **Sync next line** at each vocal cue
 - A service-owned sleep timer with presets, custom minutes, end-of-current-song mode, persistent status, and cancellation
 - Floating `TYPE_APPLICATION_OVERLAY` lyric text with no card or background
 - Draggable lyrics with persisted X/Y position
@@ -74,12 +75,13 @@ Android may ask you to allow installation from the browser or file manager used 
 3. Tap a song to open the full player. Scrub through the song, change tracks, enable shuffle/repeat, or choose any song from **Up next**.
 4. Swipe upward on the artwork/lyrics card (or tap the card) to open **Lyrics Center**. Tap a synchronized line to seek. Use **Online** to inspect and choose another recording when matching is wrong.
 5. If lyrics progressively drift because the LRCLIB recording has a different duration, choose that version again so bounded duration fitting is applied. Use **Fix timing** for a remaining constant early/late offset.
-6. For a song unavailable online, open **Edit / Import**, paste ordinary lyrics one line at a time, start playback, and tap **Sync next line** whenever each line starts; then save privately.
-7. You can also tap an MP3, M4A, WAV, or FLAC in a file manager and choose **Play with Lyr Music** from Android's app chooser.
-8. If floating lyrics are not allowed yet, use the prompt or the status below the artist to open Android's permission screen. Enable **Display over other apps** for Lyr and return; playback does not need to be restarted.
-9. Open the settings button in the top-right corner to customize the Home layout, item style, sorting, theme, accent, app font, and lyric appearance.
-10. Touch and hold a song to rename it inside Lyr. Touch and hold it again and choose **Restore original** to remove the override.
-11. Drag the lyric text anywhere on screen; its position is saved automatically.
+6. For a song unavailable online, open **AI Sync**. Enter your deployed HTTPS worker address, choose audio-only transcription or pasted-lyrics alignment, then read and confirm the upload disclosure. After processing, preview the phrases, choose **Review & edit**, correct any words or timestamps, and save privately. Deployment instructions are in [`ai-backend/README.md`](ai-backend/README.md).
+7. The manual fallback remains available under **Edit / Import**: paste ordinary lyrics one line at a time, start playback, and tap **Sync next line** whenever each line starts; then save privately.
+8. You can also tap an MP3, M4A, WAV, or FLAC in a file manager and choose **Play with Lyr Music** from Android's app chooser.
+9. If floating lyrics are not allowed yet, use the prompt or the status below the artist to open Android's permission screen. Enable **Display over other apps** for Lyr and return; playback does not need to be restarted.
+10. Open the settings button in the top-right corner to customize the Home layout, item style, sorting, theme, accent, app font, and lyric appearance.
+11. Touch and hold a song to rename it inside Lyr. Touch and hold it again and choose **Restore original** to remove the override.
+12. Drag the lyric text anywhere on screen; its position is saved automatically.
 
 Lyrics are downloaded only when a track needs them. Successful synced lyrics are cached in the app's private storage for future offline playback.
 
@@ -91,10 +93,12 @@ Lyrics are downloaded only when a track needs them. Successful synced lyrics are
 - `OverlayService` — transparent draggable lyric overlay and animations
 - `SettingsActivity` — persisted/live-applied overlay appearance settings
 - `MusicScannerUtil` — local MediaStore audio scanning
-- `LyricsRepository` — LRCLIB, cache, and local LRC fallback
-- `LrcParser` — timestamp parsing and current-line lookup
+- `LyricsRepository` — LRCLIB, cache, provenance, and local LRC fallback
+- `AiLyricsJobManager` — disclosed HTTPS audio upload, job polling, cancellation, validation, and draft handoff
+- `LrcParser` — end-aware timestamp parsing, serialization, fitting, shifting, and active-cue lookup
 - `MusicListAdapter` — song cards and asynchronous album-art decoding
+- `ai-backend` — optional FastAPI/Demucs/faster-whisper CPU worker and deployment files
 
 ## Privacy and networking
 
-Lyr does not upload audio files. For lyric lookup, it sends the current song title, artist, and duration as query parameters to the public LRCLIB service. Cached lyrics and preferences remain in the app's private local storage.
+Normal lyric lookup sends only the current song title, artist, and duration to the public LRCLIB service. Lyr uploads audio **only** after the user starts AI Sync and accepts the confirmation dialog naming the configured HTTPS server. The included worker deletes audio and intermediate files after completion, failure, or cancellation; the generated text is returned as an editable draft and is saved only after the user reviews it and taps save. AI drafts and local edits are never silently published to LRCLIB. Cached and privately saved lyrics remain in the app's private storage.

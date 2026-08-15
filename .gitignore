@@ -10,3 +10,7 @@ captures/
 .cxx/
 *.jks
 *.keystore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

@@ -380,9 +380,14 @@ class NowPlayingActivity : AppCompatActivity(),
         lyricsEntryPreview.text = if (index in previewLyrics.indices) {
             previewLyrics[index].text
         } else {
-            previewLyrics.first().text
+            ""
         }
         lyricsEntryPreview.animate().cancel()
+        if (index !in previewLyrics.indices) {
+            lyricsEntryPreview.alpha = 0f
+            lyricsEntryPreview.translationY = 0f
+            return
+        }
         lyricsEntryPreview.alpha = 0.35f
         lyricsEntryPreview.translationY = dp(5f).toFloat()
         lyricsEntryPreview.animate()

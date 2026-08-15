@@ -16,6 +16,7 @@ import kotlin.math.abs
 /** Identifies where the currently displayed synchronized lyrics came from. */
 enum class LyricsSource {
     USER_EDITED,
+    AI_GENERATED,
     IMPORTED_FILE,
     ONLINE_SELECTED,
     DOWNLOADED_CACHE,
@@ -676,6 +677,7 @@ class LyricsRepository(private val context: Context) {
         private const val PUBLISH_PROGRESS_INTERVAL = 250_000L
         private val USER_SOURCES = setOf(
             LyricsSource.USER_EDITED,
+            LyricsSource.AI_GENERATED,
             LyricsSource.IMPORTED_FILE,
             LyricsSource.ONLINE_SELECTED
         )

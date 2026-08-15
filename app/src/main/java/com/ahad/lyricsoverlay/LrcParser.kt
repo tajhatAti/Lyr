@@ -4,10 +4,23 @@ import java.util.Locale
 
 data class LrcLine(
     val timestampMs: Long,
-    val text: String
+    val text: String,
+    /**
+     * Optional exclusive end time. Ordinary LRC does not define cue ends, so Lyr stores one as
+     * an empty timestamp immediately after the lyric, for example:
+     * [00:12.00] A sung phrase
+     * [00:15.40]
+     */
+    val endTimestampMs: Long? = null
 )
 
 object LrcParser {
+
+    private data class TimedEvent(
+        val timestampMs: Long,
+        val text: String,
+        val sourceOrder: Int
+    )
 
     private val timestampRegex = Regex("""\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?]""")
     private val offsetRegex = Regex("""\[offset:([+-]?\d+)]""", RegexOption.IGNORE_CASE)
@@ -17,7 +30,8 @@ object LrcParser {
         if (rawLrc.isBlank()) return emptyList()
 
         val offset = offsetRegex.find(rawLrc)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
-        val parsed = mutableListOf<LrcLine>()
+        val events = mutableListOf<TimedEvent>()
+        var sourceOrder = 0
 
         rawLrc.lineSequence().forEach { originalLine ->
             val line = originalLine.trim().removePrefix("\uFEFF")
@@ -27,29 +41,40 @@ object LrcParser {
 
             val timestamps = timestampRegex.findAll(line).toList()
             if (timestamps.isEmpty()) return@forEach
-
             val lyricText = timestampRegex.replace(line, "").trim()
-            if (lyricText.isBlank()) return@forEach
 
             timestamps.forEach { match ->
-                val minutes = match.groupValues[1].toLong()
-                val seconds = match.groupValues[2].toLong()
-                val fractionText = match.groupValues.getOrNull(3).orEmpty()
-                val fractionMs = when (fractionText.length) {
-                    1 -> fractionText.toLongOrNull()?.times(100L) ?: 0L
-                    2 -> fractionText.toLongOrNull()?.times(10L) ?: 0L
-                    3 -> fractionText.toLongOrNull() ?: 0L
-                    else -> 0L
-                }
-                val timestamp = (minutes * 60_000L + seconds * 1_000L + fractionMs + offset)
-                    .coerceAtLeast(0L)
-                parsed += LrcLine(timestamp, lyricText)
+                events += TimedEvent(
+                    timestampMs = parseTimestamp(match, offset),
+                    text = lyricText,
+                    sourceOrder = sourceOrder++
+                )
             }
         }
 
-        return parsed
+        if (events.none { it.text.isNotBlank() }) return emptyList()
+
+        val parsed = mutableListOf<LrcLine>()
+        events
             .distinctBy { it.timestampMs to it.text }
-            .sortedBy { it.timestampMs }
+            .sortedWith(compareBy<TimedEvent> { it.timestampMs }.thenBy { it.sourceOrder })
+            .forEach { event ->
+                if (event.text.isBlank()) {
+                    val previousIndex = parsed.lastIndex
+                    if (previousIndex >= 0) {
+                        val previous = parsed[previousIndex]
+                        if (event.timestampMs > previous.timestampMs &&
+                            (previous.endTimestampMs == null || event.timestampMs < previous.endTimestampMs)
+                        ) {
+                            parsed[previousIndex] = previous.copy(endTimestampMs = event.timestampMs)
+                        }
+                    }
+                } else {
+                    parsed += LrcLine(event.timestampMs, event.text)
+                }
+            }
+
+        return parsed.distinctBy { it.timestampMs to it.text }
     }
 
     /** Creates the plain-lyrics payload required when a timed LRC is published. */
@@ -63,12 +88,16 @@ object LrcParser {
         .filter { it.isNotBlank() }
         .joinToString("\n")
 
-    /** Moves every parsed lyric line together. Positive values show lyrics later. */
+    /** Moves every parsed cue together. Positive values show lyrics later. */
     fun shiftTimestamps(rawLrc: String, deltaMs: Long): String {
         val lines = parse(rawLrc)
         if (lines.isEmpty()) return rawLrc
         return serialize(lines.map { line ->
-            line.copy(timestampMs = (line.timestampMs + deltaMs).coerceAtLeast(0L))
+            line.copy(
+                timestampMs = (line.timestampMs + deltaMs).coerceAtLeast(0L),
+                endTimestampMs = line.endTimestampMs
+                    ?.let { (it + deltaMs).coerceAtLeast(0L) }
+            )
         })
     }
 
@@ -83,13 +112,47 @@ object LrcParser {
         if (lines.isEmpty()) return rawLrc
         val ratio = targetDurationMs.toDouble() / sourceDurationMs.toDouble()
         return serialize(lines.map { line ->
-            line.copy(timestampMs = (line.timestampMs * ratio).toLong().coerceAtLeast(0L))
+            line.copy(
+                timestampMs = (line.timestampMs * ratio).toLong().coerceAtLeast(0L),
+                endTimestampMs = line.endTimestampMs
+                    ?.let { (it * ratio).toLong().coerceAtLeast(0L) }
+            )
         })
     }
 
+    /**
+     * Serializes end-aware cues as standard timestamped lyric lines followed by empty timestamp
+     * markers. Other LRC players can still read the text; Lyr uses the empty markers to become
+     * blank during instrumental and vocal gaps.
+     */
     fun serialize(lines: List<LrcLine>): String = lines
         .sortedBy(LrcLine::timestampMs)
-        .joinToString("\n") { line -> "${formatTimestamp(line.timestampMs)}${line.text.trim()}" }
+        .joinToString("\n") { line ->
+            buildString {
+                append(formatTimestamp(line.timestampMs))
+                append(line.text.trim())
+                line.endTimestampMs
+                    ?.takeIf { it > line.timestampMs }
+                    ?.let { end ->
+                        append('\n')
+                        append(formatTimestamp(end).trimEnd())
+                    }
+            }
+        }
+
+    private fun parseTimestamp(match: MatchResult, offsetMs: Long): Long {
+        val minutes = match.groupValues[1].toLong()
+        val seconds = match.groupValues[2].toLong()
+        val fractionText = match.groupValues.getOrNull(3).orEmpty()
+        val fractionMs = when (fractionText.length) {
+            1 -> fractionText.toLongOrNull()?.times(100L) ?: 0L
+            2 -> fractionText.toLongOrNull()?.times(10L) ?: 0L
+            3 -> fractionText.toLongOrNull() ?: 0L
+            else -> 0L
+        }
+        return (minutes * 60_000L + seconds * 1_000L + fractionMs + offsetMs)
+            .coerceAtLeast(0L)
+    }
 
     private fun formatTimestamp(timestampMs: Long): String {
         val safe = timestampMs.coerceAtLeast(0L)
@@ -99,6 +162,7 @@ object LrcParser {
         return String.format(Locale.US, "[%02d:%02d.%02d] ", minutes, seconds, centiseconds)
     }
 
+    /** Returns the active cue, or -1 before a cue and after its explicit exclusive end. */
     fun lineIndexAt(lines: List<LrcLine>, positionMs: Long): Int {
         if (lines.isEmpty() || positionMs < lines.first().timestampMs) return -1
 
@@ -114,6 +178,8 @@ object LrcParser {
                 high = middle - 1
             }
         }
-        return answer
+        if (answer < 0) return -1
+        val explicitEnd = lines[answer].endTimestampMs
+        return if (explicitEnd != null && positionMs >= explicitEnd) -1 else answer
     }
 }

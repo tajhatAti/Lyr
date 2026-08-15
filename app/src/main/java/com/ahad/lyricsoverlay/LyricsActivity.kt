@@ -25,10 +25,15 @@ import androidx.recyclerview.widget.LinearSmoothScroller
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.checkbox.MaterialCheckBox
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.tabs.TabLayout
 import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.textfield.TextInputLayout
+import java.net.URL
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -41,6 +46,7 @@ class LyricsActivity : AppCompatActivity(),
     private lateinit var tabs: TabLayout
     private lateinit var liveSection: View
     private lateinit var onlineSection: View
+    private lateinit var aiSection: View
     private lateinit var editSection: View
     private lateinit var liveRecyclerView: RecyclerView
     private lateinit var liveEmptyState: View
@@ -52,6 +58,18 @@ class LyricsActivity : AppCompatActivity(),
     private lateinit var searchButton: MaterialButton
     private lateinit var searchStatus: TextView
     private lateinit var onlineRecyclerView: RecyclerView
+    private lateinit var aiServerInput: TextInputEditText
+    private lateinit var aiModeToggle: MaterialButtonToggleGroup
+    private lateinit var aiKnownLyricsLayout: TextInputLayout
+    private lateinit var aiKnownLyricsInput: TextInputEditText
+    private lateinit var aiBengaliCheckBox: MaterialCheckBox
+    private lateinit var startAiButton: MaterialButton
+    private lateinit var cancelAiButton: MaterialButton
+    private lateinit var reviewAiButton: MaterialButton
+    private lateinit var aiProgress: LinearProgressIndicator
+    private lateinit var aiStatus: TextView
+    private lateinit var aiPreviewTitle: TextView
+    private lateinit var aiPreviewRecyclerView: RecyclerView
     private lateinit var editor: EditText
     private lateinit var saveButton: MaterialButton
     private lateinit var publishButton: MaterialButton
@@ -63,6 +81,7 @@ class LyricsActivity : AppCompatActivity(),
     private lateinit var timerButton: ImageButton
 
     private lateinit var lyricAdapter: LyricLineAdapter
+    private lateinit var aiPreviewAdapter: LyricLineAdapter
     private lateinit var onlineAdapter: OnlineLyricsAdapter
     private lateinit var repository: LyricsRepository
     private val worker = Executors.newSingleThreadExecutor()
@@ -81,9 +100,14 @@ class LyricsActivity : AppCompatActivity(),
     private var editorProgrammaticChange = false
     private var editorDirty = false
     private var importedPending = false
+    private var aiDraftPending = false
+    private var aiPreviewLines: List<LrcLine> = emptyList()
+    private var aiPreviewActiveIndex = -1
     private var searchGeneration = 0
     private var publishGeneration = 0
     private var selectedTab = TAB_LIVE
+
+    private val aiJobListener = AiLyricsJobManager.Listener(::renderAiJobState)
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -125,6 +149,7 @@ class LyricsActivity : AppCompatActivity(),
             serviceConnection,
             Context.BIND_AUTO_CREATE
         )
+        AiLyricsJobManager.addListener(aiJobListener)
     }
 
     override fun onResume() {
@@ -138,6 +163,7 @@ class LyricsActivity : AppCompatActivity(),
     }
 
     override fun onStop() {
+        AiLyricsJobManager.removeListener(aiJobListener)
         playerService?.removeListener(this)
         if (serviceBound) {
             try {
@@ -175,6 +201,7 @@ class LyricsActivity : AppCompatActivity(),
         if (songChanged) {
             editorDirty = false
             importedPending = false
+            aiDraftPending = false
             setEditorText("")
             onlineAdapter.submitList(emptyList())
             searchStatus.setText(R.string.search_select_download_hint)
@@ -190,6 +217,8 @@ class LyricsActivity : AppCompatActivity(),
             elapsedTime.text = MusicScannerUtil.formatDuration(latestPositionMs)
         }
         updateActiveLine(latestPositionMs)
+        updateAiPreviewLine(latestPositionMs)
+        if (songChanged) renderAiJobState(AiLyricsJobManager.currentState())
     }
 
     override fun onLyricsLoadStateChanged(state: LyricsLoadState) {
@@ -250,6 +279,7 @@ class LyricsActivity : AppCompatActivity(),
         tabs = findViewById(R.id.lyricsTabs)
         liveSection = findViewById(R.id.liveLyricsSection)
         onlineSection = findViewById(R.id.onlineLyricsSection)
+        aiSection = findViewById(R.id.aiLyricsSection)
         editSection = findViewById(R.id.editLyricsSection)
         liveRecyclerView = findViewById(R.id.liveLyricsRecyclerView)
         liveEmptyState = findViewById(R.id.liveLyricsEmptyState)
@@ -261,6 +291,18 @@ class LyricsActivity : AppCompatActivity(),
         searchButton = findViewById(R.id.searchLyricsButton)
         searchStatus = findViewById(R.id.onlineLyricsStatus)
         onlineRecyclerView = findViewById(R.id.onlineLyricsRecyclerView)
+        aiServerInput = findViewById(R.id.aiServerInput)
+        aiModeToggle = findViewById(R.id.aiModeToggle)
+        aiKnownLyricsLayout = findViewById(R.id.aiKnownLyricsInputLayout)
+        aiKnownLyricsInput = findViewById(R.id.aiKnownLyricsInput)
+        aiBengaliCheckBox = findViewById(R.id.aiBengaliCheckBox)
+        startAiButton = findViewById(R.id.startAiLyricsButton)
+        cancelAiButton = findViewById(R.id.cancelAiLyricsButton)
+        reviewAiButton = findViewById(R.id.reviewAiLyricsButton)
+        aiProgress = findViewById(R.id.aiLyricsProgress)
+        aiStatus = findViewById(R.id.aiLyricsStatus)
+        aiPreviewTitle = findViewById(R.id.aiPreviewTitle)
+        aiPreviewRecyclerView = findViewById(R.id.aiLyricsPreviewRecyclerView)
         editor = findViewById(R.id.lrcEditor)
         saveButton = findViewById(R.id.saveLyricsButton)
         publishButton = findViewById(R.id.publishLyricsButton)
@@ -271,11 +313,16 @@ class LyricsActivity : AppCompatActivity(),
         playPauseButton = findViewById(R.id.lyricsPlayPauseButton)
         timerButton = findViewById(R.id.lyricsTimerButton)
         seekBar.max = SEEK_MAX
+        val savedEndpoint = getSharedPreferences(AI_PREFERENCES, Context.MODE_PRIVATE)
+            .getString(KEY_AI_SERVER, null)
+            .orEmpty()
+        aiServerInput.setText(savedEndpoint.ifBlank { BuildConfig.AI_SYNC_BASE_URL })
     }
 
     private fun setupTabs() {
         tabs.addTab(tabs.newTab().setText(R.string.lyrics_tab_live).setIcon(R.drawable.ic_lyrics))
         tabs.addTab(tabs.newTab().setText(R.string.lyrics_tab_online).setIcon(R.drawable.ic_search))
+        tabs.addTab(tabs.newTab().setText(R.string.lyrics_tab_ai).setIcon(R.drawable.ic_ai_mic))
         tabs.addTab(tabs.newTab().setText(R.string.lyrics_tab_edit).setIcon(R.drawable.ic_edit))
         tabs.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab) = showTab(tab.position, animate = true)
@@ -311,6 +358,15 @@ class LyricsActivity : AppCompatActivity(),
         onlineRecyclerView.layoutManager = LinearLayoutManager(this)
         onlineRecyclerView.adapter = onlineAdapter
         (onlineRecyclerView.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
+
+        aiPreviewAdapter = LyricLineAdapter { line ->
+            playerService?.seekTo(line.timestampMs)
+            updateAiPreviewLine(line.timestampMs, force = true)
+        }
+        aiPreviewAdapter.updateConfiguration(customization)
+        aiPreviewRecyclerView.layoutManager = LinearLayoutManager(this)
+        aiPreviewRecyclerView.adapter = aiPreviewAdapter
+        (aiPreviewRecyclerView.itemAnimator as? SimpleItemAnimator)?.supportsChangeAnimations = false
     }
 
     private fun setupControls() {
@@ -321,7 +377,20 @@ class LyricsActivity : AppCompatActivity(),
             playerService?.retryLyrics()
         }
         findViewById<View>(R.id.findOnlineLyricsButton).setOnClickListener { tabs.getTabAt(TAB_ONLINE)?.select() }
+        findViewById<View>(R.id.createAiLyricsButton).setOnClickListener { tabs.getTabAt(TAB_AI)?.select() }
         findViewById<View>(R.id.openLyricsEditorButton).setOnClickListener { tabs.getTabAt(TAB_EDIT)?.select() }
+        aiModeToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                aiKnownLyricsLayout.visibility = if (checkedId == R.id.aiKnownLyricsModeButton) {
+                    View.VISIBLE
+                } else {
+                    View.GONE
+                }
+            }
+        }
+        startAiButton.setOnClickListener { confirmAiUpload() }
+        cancelAiButton.setOnClickListener { AiLyricsJobManager.cancel() }
+        reviewAiButton.setOnClickListener { loadAiDraftIntoEditor() }
         searchButton.setOnClickListener { searchOnline() }
         searchInput.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_SEARCH) {
@@ -353,6 +422,7 @@ class LyricsActivity : AppCompatActivity(),
                     val position = if (latestDurationMs > 0L) latestDurationMs * progress / SEEK_MAX else 0L
                     elapsedTime.text = MusicScannerUtil.formatDuration(position)
                     updateActiveLine(position)
+                    updateAiPreviewLine(position)
                 }
             }
 
@@ -375,7 +445,7 @@ class LyricsActivity : AppCompatActivity(),
 
     private fun showTab(index: Int, animate: Boolean) {
         selectedTab = index.coerceIn(TAB_LIVE, TAB_EDIT)
-        val sections = listOf(liveSection, onlineSection, editSection)
+        val sections = listOf(liveSection, onlineSection, aiSection, editSection)
         sections.forEachIndexed { sectionIndex, section ->
             if (sectionIndex == selectedTab) {
                 section.visibility = View.VISIBLE
@@ -431,6 +501,172 @@ class LyricsActivity : AppCompatActivity(),
         liveRecyclerView.layoutManager?.startSmoothScroll(scroller)
     }
 
+    private fun confirmAiUpload() {
+        val song = currentSong
+        if (song == null) {
+            Toast.makeText(this, R.string.no_song_for_lyrics, Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (AiLyricsJobManager.currentState().isRunning) {
+            Toast.makeText(this, R.string.ai_job_already_running, Toast.LENGTH_LONG).show()
+            return
+        }
+        val endpoint = validatedAiEndpoint(aiServerInput.text?.toString().orEmpty())
+        if (endpoint == null) {
+            findViewById<TextInputLayout>(R.id.aiServerInputLayout).error =
+                getString(R.string.ai_invalid_server)
+            aiServerInput.requestFocus()
+            return
+        }
+        findViewById<TextInputLayout>(R.id.aiServerInputLayout).error = null
+        val mode = if (aiModeToggle.checkedButtonId == R.id.aiKnownLyricsModeButton) {
+            AiLyricsMode.ALIGN_KNOWN_LYRICS
+        } else {
+            AiLyricsMode.AUDIO_ONLY
+        }
+        val knownLyrics = aiKnownLyricsInput.text?.toString().orEmpty().trim()
+        if (mode == AiLyricsMode.ALIGN_KNOWN_LYRICS && knownLyrics.isBlank()) {
+            aiKnownLyricsLayout.error = getString(R.string.ai_known_lyrics_required)
+            aiKnownLyricsInput.requestFocus()
+            return
+        }
+        aiKnownLyricsLayout.error = null
+        getSharedPreferences(AI_PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_AI_SERVER, endpoint)
+            .apply()
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.ai_upload_confirmation_title)
+            .setMessage(getString(R.string.ai_upload_confirmation_message, endpoint))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.ai_confirm_upload) { _, _ ->
+                val started = AiLyricsJobManager.start(
+                    context = applicationContext,
+                    endpoint = endpoint,
+                    song = song,
+                    mode = mode,
+                    knownLyrics = knownLyrics,
+                    prioritizeBengali = aiBengaliCheckBox.isChecked
+                )
+                if (!started) {
+                    Toast.makeText(this, R.string.ai_job_already_running, Toast.LENGTH_LONG).show()
+                }
+            }
+            .show()
+    }
+
+    private fun renderAiJobState(state: AiLyricsJobState) {
+        if (!::aiStatus.isInitialized || isFinishing || isDestroyed) return
+        val belongsToCurrentSong = state.songId != null && state.songId == currentSong?.id
+        val controlsEnabled = !state.isRunning
+        aiServerInput.isEnabled = controlsEnabled
+        aiKnownLyricsInput.isEnabled = controlsEnabled
+        aiBengaliCheckBox.isEnabled = controlsEnabled
+        startAiButton.isEnabled = controlsEnabled
+        findViewById<MaterialButton>(R.id.aiAudioOnlyModeButton).isEnabled = controlsEnabled
+        findViewById<MaterialButton>(R.id.aiKnownLyricsModeButton).isEnabled = controlsEnabled
+        cancelAiButton.visibility = if (state.isRunning) View.VISIBLE else View.GONE
+
+        if (state.songId != null && !belongsToCurrentSong) {
+            aiStatus.setText(
+                if (state.isRunning) R.string.ai_other_song_running
+                else R.string.ai_idle_status
+            )
+            aiProgress.visibility = if (state.isRunning) View.VISIBLE else View.GONE
+            aiProgress.setProgressCompat(state.progress, true)
+            showAiPreview(emptyList())
+            reviewAiButton.visibility = View.GONE
+            return
+        }
+
+        val statusText = when (state.phase) {
+            AiJobPhase.IDLE -> getString(R.string.ai_idle_status)
+            AiJobPhase.UPLOADING -> getString(
+                R.string.ai_uploading_status,
+                ((state.progress * 100) / 58).coerceIn(0, 100)
+            )
+            AiJobPhase.QUEUED -> getString(R.string.ai_queued_status)
+            AiJobPhase.PROCESSING -> getString(
+                R.string.ai_processing_status,
+                (((state.progress - 60) * 100) / 40).coerceIn(0, 100)
+            )
+            AiJobPhase.COMPLETED -> getString(R.string.ai_completed_status)
+            AiJobPhase.FAILED -> getString(
+                R.string.ai_failed_status,
+                state.message ?: getString(R.string.lyrics_search_failed)
+            )
+            AiJobPhase.CANCELED -> getString(R.string.ai_canceled_status)
+        }
+        aiStatus.text = if (!state.message.isNullOrBlank() &&
+            (state.phase == AiJobPhase.QUEUED || state.phase == AiJobPhase.PROCESSING)
+        ) {
+            "$statusText\n${getString(R.string.ai_server_message, state.message)}"
+        } else {
+            statusText
+        }
+        aiProgress.visibility = if (state.isRunning || state.phase == AiJobPhase.COMPLETED) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+        aiProgress.setProgressCompat(state.progress.coerceIn(0, 100), true)
+
+        val resultLines = if (state.phase == AiJobPhase.COMPLETED) {
+            state.rawLrc?.let(LrcParser::parse).orEmpty()
+        } else {
+            emptyList()
+        }
+        showAiPreview(resultLines)
+        reviewAiButton.visibility = if (resultLines.isNotEmpty()) View.VISIBLE else View.GONE
+        if (resultLines.isNotEmpty()) updateAiPreviewLine(latestPositionMs, force = true)
+    }
+
+    private fun showAiPreview(lines: List<LrcLine>) {
+        if (lines == aiPreviewLines) return
+        aiPreviewLines = lines
+        aiPreviewActiveIndex = -1
+        aiPreviewAdapter.updateLines(lines)
+        val visibility = if (lines.isEmpty()) View.GONE else View.VISIBLE
+        aiPreviewTitle.visibility = visibility
+        aiPreviewRecyclerView.visibility = visibility
+    }
+
+    private fun updateAiPreviewLine(positionMs: Long, force: Boolean = false) {
+        if (aiPreviewLines.isEmpty()) return
+        val index = LrcParser.lineIndexAt(aiPreviewLines, positionMs)
+        if (!force && index == aiPreviewActiveIndex) return
+        aiPreviewActiveIndex = index
+        aiPreviewAdapter.setActiveIndex(index)
+        if (index in aiPreviewLines.indices && selectedTab == TAB_AI) {
+            (aiPreviewRecyclerView.layoutManager as? LinearLayoutManager)
+                ?.scrollToPositionWithOffset(index, aiPreviewRecyclerView.height / 2 - dp(34f))
+        }
+    }
+
+    private fun loadAiDraftIntoEditor() {
+        val state = AiLyricsJobManager.currentState()
+        val rawLrc = state.rawLrc
+        if (state.phase != AiJobPhase.COMPLETED ||
+            state.songId != currentSong?.id ||
+            rawLrc.isNullOrBlank()
+        ) return
+        setEditorText(rawLrc)
+        editorDirty = true
+        importedPending = false
+        aiDraftPending = true
+        tabs.getTabAt(TAB_EDIT)?.select()
+        Toast.makeText(this, R.string.ai_draft_loaded_in_editor, Toast.LENGTH_LONG).show()
+    }
+
+    private fun validatedAiEndpoint(rawValue: String): String? = try {
+        val url = URL(rawValue.trim().trimEnd('/'))
+        if (url.protocol != "https" || url.host.isBlank() || url.userInfo != null) null
+        else url.toString().trimEnd('/')
+    } catch (_: Exception) {
+        null
+    }
+
     private fun searchOnline() {
         val song = currentSong
         if (song == null) {
@@ -480,6 +716,7 @@ class LyricsActivity : AppCompatActivity(),
                 if (playerService?.useOnlineLyrics(candidate) == true) {
                     editorDirty = false
                     importedPending = false
+                    aiDraftPending = false
                     tabs.getTabAt(TAB_LIVE)?.select()
                     Toast.makeText(this, R.string.lyrics_saved, Toast.LENGTH_SHORT).show()
                 }
@@ -506,6 +743,7 @@ class LyricsActivity : AppCompatActivity(),
                     setEditorText(text)
                     editorDirty = true
                     importedPending = true
+                    aiDraftPending = false
                     Toast.makeText(this, R.string.lrc_imported, Toast.LENGTH_SHORT).show()
                 }
             }
@@ -573,10 +811,17 @@ class LyricsActivity : AppCompatActivity(),
             Toast.makeText(this, R.string.invalid_lrc, Toast.LENGTH_LONG).show()
             return
         }
-        val source = if (importedPending) LyricsSource.IMPORTED_FILE else LyricsSource.USER_EDITED
+        val source = when {
+            aiDraftPending || playerService?.activeLyricsSource() == LyricsSource.AI_GENERATED -> {
+                LyricsSource.AI_GENERATED
+            }
+            importedPending -> LyricsSource.IMPORTED_FILE
+            else -> LyricsSource.USER_EDITED
+        }
         if (playerService?.saveUserLyrics(raw, source) == true) {
             editorDirty = false
             importedPending = false
+            aiDraftPending = false
             tabs.getTabAt(TAB_LIVE)?.select()
             Toast.makeText(this, R.string.lyrics_saved, Toast.LENGTH_SHORT).show()
         }
@@ -591,6 +836,7 @@ class LyricsActivity : AppCompatActivity(),
             .setPositiveButton(R.string.restore_automatic_lyrics) { _, _ ->
                 editorDirty = false
                 importedPending = false
+                aiDraftPending = false
                 setEditorText("")
                 playerService?.restoreAutomaticLyrics()
                 tabs.getTabAt(TAB_LIVE)?.select()
@@ -717,6 +963,7 @@ class LyricsActivity : AppCompatActivity(),
         if (result?.timingAutoAdjusted == true) return R.string.lyrics_source_online_adjusted
         return when (result?.source) {
             LyricsSource.USER_EDITED -> R.string.lyrics_source_edited
+            LyricsSource.AI_GENERATED -> R.string.lyrics_source_ai
             LyricsSource.IMPORTED_FILE -> R.string.lyrics_source_imported
             LyricsSource.ONLINE_SELECTED -> R.string.lyrics_source_selected
             LyricsSource.DOWNLOADED_CACHE -> R.string.lyrics_source_cache
@@ -782,11 +1029,17 @@ class LyricsActivity : AppCompatActivity(),
         AppUi.applyTypeface(root, customization.appFont)
         if (::lyricAdapter.isInitialized) lyricAdapter.updateConfiguration(customization)
         if (::onlineAdapter.isInitialized) onlineAdapter.updateConfiguration(customization)
+        if (::aiPreviewAdapter.isInitialized) aiPreviewAdapter.updateConfiguration(customization)
         val accent = customization.accentColor
         tabs.setSelectedTabIndicatorColor(accent)
         tabs.setTabTextColors(ContextCompat.getColor(this, R.color.text_secondary), accent)
         seekBar.progressTintList = ColorStateList.valueOf(accent)
         seekBar.thumbTintList = ColorStateList.valueOf(accent)
+        aiProgress.setIndicatorColor(accent)
+        aiBengaliCheckBox.buttonTintList = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(accent, ContextCompat.getColor(this, R.color.text_secondary))
+        )
         playPauseCard.setCardBackgroundColor(accent)
         playPauseCard.rippleColor = ColorStateList.valueOf(
             ColorUtils.setAlphaComponent(AppUi.contrastTextColor(accent), 45)
@@ -796,6 +1049,8 @@ class LyricsActivity : AppCompatActivity(),
         listOf(
             searchButton,
             saveButton,
+            startAiButton,
+            reviewAiButton,
             findViewById<MaterialButton>(R.id.retryAutomaticLyricsButton)
         ).forEach { button ->
             button.backgroundTintList = ColorStateList.valueOf(accent)
@@ -804,7 +1059,11 @@ class LyricsActivity : AppCompatActivity(),
         }
         listOf(
             R.id.findOnlineLyricsButton,
+            R.id.createAiLyricsButton,
             R.id.openLyricsEditorButton,
+            R.id.aiAudioOnlyModeButton,
+            R.id.aiKnownLyricsModeButton,
+            R.id.cancelAiLyricsButton,
             R.id.importLrcButton,
             R.id.insertTimestampButton,
             R.id.restoreAutomaticLyricsButton,
@@ -818,6 +1077,12 @@ class LyricsActivity : AppCompatActivity(),
                 strokeColor = ColorStateList.valueOf(ColorUtils.setAlphaComponent(accent, 150))
             }
         }
+        val aiModeBackground = ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf()),
+            intArrayOf(ColorUtils.setAlphaComponent(accent, 35), android.graphics.Color.TRANSPARENT)
+        )
+        findViewById<MaterialButton>(R.id.aiAudioOnlyModeButton).backgroundTintList = aiModeBackground
+        findViewById<MaterialButton>(R.id.aiKnownLyricsModeButton).backgroundTintList = aiModeBackground
         updateOverlayButton()
         playerService?.let { service ->
             onSleepTimerChanged(service.sleepTimerEndAtMs(), service.sleepsAfterCurrentSong())
@@ -836,12 +1101,15 @@ class LyricsActivity : AppCompatActivity(),
     companion object {
         private const val TAB_LIVE = 0
         private const val TAB_ONLINE = 1
-        private const val TAB_EDIT = 2
+        private const val TAB_AI = 2
+        private const val TAB_EDIT = 3
         private const val SEEK_MAX = 1_000
         private const val USER_SCROLL_PAUSE_MS = 5_000L
         private const val SMALL_TIMING_STEP_MS = 500L
         private const val LARGE_TIMING_STEP_MS = 5_000L
         private const val MAX_LRC_CHARACTERS = 1_000_000
+        private const val AI_PREFERENCES = "ai_lyrics_settings"
+        private const val KEY_AI_SERVER = "server_endpoint"
         private const val STATE_TAB = "lyrics_selected_tab"
         private val TIMED_LINE_PREFIX = Regex("""^\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?]""")
         private val LRC_METADATA_LINE = Regex("""^\[[A-Za-z]{1,10}:.*]$""")
