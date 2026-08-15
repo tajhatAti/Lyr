@@ -13,6 +13,7 @@
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:name=".LyrApplication"
@@ -78,6 +79,11 @@
         <service
             android:name=".OverlayService"
             android:exported="false" />
+
+        <service
+            android:name=".OnDeviceAiService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name="androidx.media.session.MediaButtonReceiver"

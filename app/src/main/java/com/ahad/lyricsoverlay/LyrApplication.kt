@@ -8,6 +8,7 @@ class LyrApplication : Application() {
         super.onCreate()
         AppPreferences.initialize(this)
         applyThemeMode(AppPreferences.snapshot().themeMode)
+        OnDeviceAiLyricsManager.restorePending(this)
     }
 
     companion object {

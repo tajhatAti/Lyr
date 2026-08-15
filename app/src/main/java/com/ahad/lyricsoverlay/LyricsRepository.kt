@@ -81,12 +81,71 @@ class LyricsRepository(private val context: Context) {
         return refreshFromOnline(song)
     }
 
+    /**
+     * Smart-pipeline first pass: reuse an authoritative private choice or downloaded cache, then
+     * search LRCLIB by metadata. Same-folder LRC is intentionally deferred until both online
+     * attempts have failed, matching the retrieval priority shown in the process UI.
+     */
+    fun findSmartInitialLyrics(song: Song): LyricsResult? {
+        readUserLyrics(song)?.let { return it }
+        readDownloadedLyrics(song)?.let { return it }
+        return refreshFromOnline(song)
+    }
+
+    /** Same-name local LRC fallback used only after metadata and recognized-phrase lookup fail. */
+    fun findLocalFallback(song: Song): LyricsResult? = findLocalSidecar(song)?.let { rawLrc ->
+        LyricsResult(rawLrc, LyricsSource.LOCAL_SIDECAR)
+    }
+
     /** Ignores existing files, performs a fresh LRCLIB lookup, and updates the offline cache. */
     fun refreshFromOnline(song: Song): LyricsResult? {
         val candidate = fetchBestOnline(song) ?: return null
         val result = prepareOnlineResult(song, candidate, LyricsSource.ONLINE_AUTO)
         writeDownloadedLyrics(song, result)
         return result
+    }
+
+    /**
+     * Makes a second, conservative LRCLIB attempt using words heard locally from the recording.
+     * No audio is uploaded: only a few short recognized text phrases become ordinary LRCLIB search
+     * queries. A candidate is accepted only when its lyrics overlap the local recognition and its
+     * duration remains plausible, preventing an unrelated title from being silently attached.
+     */
+    fun findOnlineFromRecognizedPhrases(
+        song: Song,
+        recognizedPhrases: List<String>
+    ): LyricsResult? {
+        val recognizedText = recognizedPhrases.joinToString(" ")
+        val recognizedTokens = normalizedTokens(recognizedText)
+        if (recognizedTokens.size < MIN_RECOGNIZED_QUERY_TOKENS) return null
+
+        val queries = recognitionSearchQueries(recognizedPhrases)
+        if (queries.isEmpty()) return null
+        val candidates = LinkedHashMap<Long, OnlineLyricsCandidate>()
+        queries.take(MAX_RECOGNITION_SEARCH_ATTEMPTS).forEach { query ->
+            val response = executeRequest("https://lrclib.net/api/search?q=${encode(query)}")
+            if (!response.successful) return@forEach
+            try {
+                val json = JSONArray(response.body)
+                for (index in 0 until json.length()) {
+                    json.optJSONObject(index)?.toCandidate()?.let { candidate ->
+                        candidates[candidate.id] = candidate
+                    }
+                }
+            } catch (_: Exception) {
+                // A malformed response from one hint must not block local lyric generation.
+            }
+        }
+
+        val best = candidates.values
+            .map { candidate -> candidate to recognitionCandidateScore(song, candidate, recognizedTokens) }
+            .filter { (_, score) -> score >= MINIMUM_RECOGNITION_SCORE }
+            .maxByOrNull { (_, score) -> score }
+            ?.first
+            ?: return null
+        return prepareOnlineResult(song, best, LyricsSource.ONLINE_AUTO).also { result ->
+            writeDownloadedLyrics(song, result)
+        }
     }
 
     /** Searches LRCLIB for a user-visible result picker. Only valid synchronized results remain. */
@@ -316,6 +375,62 @@ class LyricsRepository(private val context: Context) {
             plainLyrics = optString("plainLyrics").takeUnless { it == "null" }.orEmpty()
         )
     }
+
+    private fun recognitionSearchQueries(phrases: List<String>): List<String> {
+        val normalized = phrases.map { phrase ->
+            phrase.trim().replace(Regex("\\s+"), " ")
+        }.filter { phrase ->
+            val count = phrase.split(' ').count { it.isNotBlank() }
+            count in MIN_QUERY_WORDS..MAX_QUERY_WORDS && phrase.length >= MIN_QUERY_CHARACTERS
+        }
+        if (normalized.isEmpty()) return emptyList()
+
+        val frequencies = normalized.groupingBy { normalizeForMatch(it) }.eachCount()
+        return normalized.distinctBy(::normalizeForMatch)
+            .sortedWith(
+                compareByDescending<String> { frequencies[normalizeForMatch(it)] ?: 0 }
+                    .thenBy { kotlin.math.abs(it.split(' ').size - PREFERRED_QUERY_WORDS) }
+                    .thenBy { it.length }
+            )
+    }
+
+    private fun recognitionCandidateScore(
+        song: Song,
+        candidate: OnlineLyricsCandidate,
+        recognizedTokens: Set<String>
+    ): Double {
+        val candidateTokens = normalizedTokens(
+            candidate.plainLyrics.ifBlank {
+                LrcParser.parse(candidate.syncedLyrics).joinToString(" ") { it.text }
+            }
+        )
+        if (candidateTokens.isEmpty()) return 0.0
+        val sharedTokens = recognizedTokens.intersect(candidateTokens)
+        val overlap = sharedTokens.size.toDouble() / recognizedTokens.size.coerceAtMost(80)
+        val usefulMatches = sharedTokens.count { token -> token.length >= 3 }
+        if (usefulMatches < MIN_USEFUL_RECOGNIZED_MATCHES) return 0.0
+
+        val targetDuration = song.durationMs.coerceAtLeast(1L) / 1_000.0
+        val durationDifference = if (candidate.durationSeconds > 0.0) {
+            kotlin.math.abs(candidate.durationSeconds - targetDuration)
+        } else {
+            Double.MAX_VALUE
+        }
+        val allowedDifference = maxOf(
+            MAX_RECOGNIZED_DURATION_DIFFERENCE_SECONDS,
+            targetDuration * MAX_RECOGNIZED_DURATION_RATIO
+        )
+        if (durationDifference > allowedDifference) return 0.0
+        val durationScore = 1.0 - (durationDifference / allowedDifference).coerceIn(0.0, 1.0)
+        return overlap * RECOGNIZED_OVERLAP_WEIGHT + durationScore * RECOGNIZED_DURATION_WEIGHT
+    }
+
+    private fun normalizedTokens(value: String): Set<String> = normalizeForMatch(value)
+        .split(' ')
+        .asSequence()
+        .map(String::trim)
+        .filter { it.length >= MIN_RECOGNIZED_TOKEN_LENGTH }
+        .toSet()
 
     private fun candidateScore(
         candidate: OnlineLyricsCandidate,
@@ -669,8 +784,21 @@ class LyricsRepository(private val context: Context) {
         private const val DEFAULT_RATE_LIMIT_SECONDS = 10
         private const val MAX_RETRY_AFTER_SECONDS = 300
         private const val MAX_AUTO_SEARCH_ATTEMPTS = 2
+        private const val MAX_RECOGNITION_SEARCH_ATTEMPTS = 4
         private const val MAX_VISIBLE_RESULTS = 20
         private const val MINIMUM_AUTOMATIC_SCORE = 1_500L
+        private const val MIN_RECOGNIZED_QUERY_TOKENS = 4
+        private const val MIN_RECOGNIZED_TOKEN_LENGTH = 2
+        private const val MIN_USEFUL_RECOGNIZED_MATCHES = 5
+        private const val MIN_QUERY_WORDS = 2
+        private const val MAX_QUERY_WORDS = 8
+        private const val PREFERRED_QUERY_WORDS = 4
+        private const val MIN_QUERY_CHARACTERS = 4
+        private const val MAX_RECOGNIZED_DURATION_DIFFERENCE_SECONDS = 12.0
+        private const val MAX_RECOGNIZED_DURATION_RATIO = 0.08
+        private const val RECOGNIZED_OVERLAP_WEIGHT = 0.8
+        private const val RECOGNIZED_DURATION_WEIGHT = 0.2
+        private const val MINIMUM_RECOGNITION_SCORE = 0.30
         private const val AUTO_FIT_MIN_DIFFERENCE_MS = 4_000L
         private const val MIN_AUTO_FIT_RATIO = 0.85
         private const val MAX_AUTO_FIT_RATIO = 1.20

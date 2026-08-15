@@ -20,6 +20,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
@@ -32,12 +34,22 @@ enum class AiLyricsMode {
 
 enum class AiJobPhase {
     IDLE,
+    SEARCHING_ONLINE,
     DOWNLOADING_MODEL,
     PREPARING_AUDIO,
     PROCESSING,
+    SEARCHING_RECOGNIZED,
+    FINALIZING,
     COMPLETED,
     FAILED,
     CANCELED
+}
+
+enum class AiLyricsResultSource {
+    ONLINE,
+    LOCAL_FILE,
+    ALIGNED_ON_DEVICE,
+    ON_DEVICE
 }
 
 data class AiLyricsJobState(
@@ -45,12 +57,17 @@ data class AiLyricsJobState(
     val phase: AiJobPhase = AiJobPhase.IDLE,
     val progress: Int = 0,
     val message: String? = null,
-    val rawLrc: String? = null
+    val rawLrc: String? = null,
+    val resultSource: AiLyricsResultSource? = null,
+    val resumed: Boolean = false
 ) {
     val isRunning: Boolean
-        get() = phase == AiJobPhase.DOWNLOADING_MODEL ||
+        get() = phase == AiJobPhase.SEARCHING_ONLINE ||
+            phase == AiJobPhase.DOWNLOADING_MODEL ||
             phase == AiJobPhase.PREPARING_AUDIO ||
-            phase == AiJobPhase.PROCESSING
+            phase == AiJobPhase.PROCESSING ||
+            phase == AiJobPhase.SEARCHING_RECOGNIZED ||
+            phase == AiJobPhase.FINALIZING
 }
 
 data class OnDeviceModelStatus(
@@ -86,6 +103,24 @@ object OnDeviceAiLyricsManager {
             get() = "$MODEL_REPOSITORY/$fileName"
     }
 
+    private data class JobRequest(
+        val requestId: Long,
+        val song: Song,
+        val mode: AiLyricsMode,
+        val knownLyrics: String,
+        val language: String
+    )
+
+    private data class RecognitionCheckpoint(
+        val nextChunkIndex: Int,
+        val segments: List<OnDeviceLyricsProcessor.Segment>
+    )
+
+    private data class LocalProcessingResult(
+        val rawLrc: String,
+        val recognizedPhrases: List<String>
+    )
+
     private val executor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArraySet<Listener>()
@@ -96,6 +131,12 @@ object OnDeviceAiLyricsManager {
 
     @Volatile
     private var activeConnection: HttpURLConnection? = null
+
+    @Volatile
+    private var applicationContext: Context? = null
+
+    @Volatile
+    private var currentRequest: JobRequest? = null
 
     fun currentState(): AiLyricsJobState = state
 
@@ -130,30 +171,73 @@ object OnDeviceAiLyricsManager {
         if (state.isRunning) return false
         if (mode == AiLyricsMode.ALIGN_KNOWN_LYRICS && knownLyrics.isBlank()) return false
 
-        val token = generation.incrementAndGet()
         val appContext = context.applicationContext
+        applicationContext = appContext
+        clearPersistedJob(appContext, deleteWork = true)
+        val request = JobRequest(
+            requestId = System.currentTimeMillis(),
+            song = song,
+            mode = mode,
+            knownLyrics = knownLyrics,
+            language = if (prioritizeBengali) "bn" else "auto"
+        )
+        currentRequest = request
+        persistRequest(appContext, request)
+        val token = generation.incrementAndGet()
         updateState(
             AiLyricsJobState(
                 songId = song.id,
-                phase = if (usableModelFile(appContext, recommendedModel(appContext)) == null) {
-                    AiJobPhase.DOWNLOADING_MODEL
-                } else {
-                    AiJobPhase.PREPARING_AUDIO
-                },
-                progress = 0
+                phase = AiJobPhase.SEARCHING_ONLINE,
+                progress = 1,
+                message = "Checking song details online first…"
             )
         )
-        executor.execute {
-            runJob(
-                context = appContext,
-                song = song,
-                mode = mode,
-                knownLyrics = knownLyrics,
-                language = if (prioritizeBengali) "bn" else "auto",
-                token = token
-            )
-        }
+        OnDeviceAiService.ensureRunning(appContext)
+        executor.execute { runJob(appContext, request, token, resume = false) }
         return true
+    }
+
+    /** Restores a completed draft or resumes an interrupted job from its last durable chunk. */
+    @Synchronized
+    fun restorePending(context: Context) {
+        if (currentRequest != null || state.isRunning) return
+        val appContext = context.applicationContext
+        applicationContext = appContext
+        val request = readPersistedRequest(appContext) ?: return
+        currentRequest = request
+        val savedState = readPersistedState(appContext)
+        if (savedState?.phase == AiJobPhase.COMPLETED && !savedState.rawLrc.isNullOrBlank()) {
+            state = savedState.copy(resumed = true)
+            mainHandler.post {
+                listeners.forEach { listener -> listener.onAiLyricsJobChanged(state) }
+            }
+            return
+        }
+        if (savedState?.phase == AiJobPhase.FAILED) {
+            state = savedState.copy(resumed = true)
+            mainHandler.post {
+                listeners.forEach { listener -> listener.onAiLyricsJobChanged(state) }
+            }
+            return
+        }
+        if (savedState?.phase == AiJobPhase.CANCELED) {
+            clearPersistedJob(appContext, deleteWork = true)
+            currentRequest = null
+            return
+        }
+
+        val token = generation.incrementAndGet()
+        updateState(
+            AiLyricsJobState(
+                songId = request.song.id,
+                phase = savedState?.phase ?: AiJobPhase.SEARCHING_ONLINE,
+                progress = savedState?.progress ?: 1,
+                message = "Resuming saved lyrics work…",
+                resumed = true
+            )
+        )
+        OnDeviceAiService.ensureRunning(appContext)
+        executor.execute { runJob(appContext, request, token, resume = true) }
     }
 
     fun cancel() {
@@ -164,14 +248,19 @@ object OnDeviceAiLyricsManager {
         updateState(
             previous.copy(
                 phase = AiJobPhase.CANCELED,
-                message = null,
+                message = "Saved AI work was canceled.",
                 rawLrc = null
             )
         )
+        applicationContext?.let { clearPersistedJob(it, deleteWork = true) }
+        currentRequest = null
     }
 
     fun clearFinishedResult() {
-        if (!state.isRunning) updateState(AiLyricsJobState())
+        if (state.isRunning) return
+        applicationContext?.let { clearPersistedJob(it, deleteWork = true) }
+        currentRequest = null
+        updateState(AiLyricsJobState())
     }
 
     fun deleteDownloadedModels(context: Context): Boolean {
@@ -180,26 +269,106 @@ object OnDeviceAiLyricsManager {
         listOf(BASE_MODEL, SMALL_MODEL).forEach { spec ->
             val file = modelFile(context.applicationContext, spec)
             val partial = File(file.parentFile, "${spec.fileName}.part")
+            val verified = verifiedModelMarker(file)
             if (file.exists()) deletedAny = file.delete() || deletedAny
             if (partial.exists()) deletedAny = partial.delete() || deletedAny
+            if (verified.exists()) deletedAny = verified.delete() || deletedAny
         }
         return deletedAny
     }
 
     private fun runJob(
         context: Context,
-        song: Song,
-        mode: AiLyricsMode,
-        knownLyrics: String,
-        language: String,
-        token: Int
+        request: JobRequest,
+        token: Int,
+        resume: Boolean
     ) {
+        val song = request.song
+        val workDir = jobWorkDirectory(context)
+        if (!resume) workDir.deleteRecursively()
+        workDir.mkdirs()
+
+        val metadataSearchMarker = File(workDir, INITIAL_SEARCH_MARKER)
+        if (!metadataSearchMarker.isFile) {
+            try {
+                updateIfCurrent(
+                    token,
+                    AiLyricsJobState(
+                        songId = song.id,
+                        phase = AiJobPhase.SEARCHING_ONLINE,
+                        progress = 2,
+                        message = "Searching LRCLIB with title and artist…",
+                        resumed = resume
+                    )
+                )
+                val existing = LyricsRepository(context).findSmartInitialLyrics(song)
+                ensureCurrent(token)
+                if (existing != null) {
+                    val alignPastedLyrics = request.mode == AiLyricsMode.ALIGN_KNOWN_LYRICS &&
+                        existing.source in ONLINE_TIMING_SOURCES
+                    val completedLrc = if (alignPastedLyrics) {
+                        alignKnownLyricsToTimedResult(request, existing.rawLrc)
+                    } else {
+                        existing.rawLrc
+                    }
+                    val source = when {
+                        alignPastedLyrics -> AiLyricsResultSource.ALIGNED_ON_DEVICE
+                        existing.source == LyricsSource.AI_GENERATED -> AiLyricsResultSource.ON_DEVICE
+                        else -> AiLyricsResultSource.ONLINE
+                    }
+                    complete(
+                        request,
+                        token,
+                        completedLrc,
+                        source,
+                        when {
+                            alignPastedLyrics -> "Aligned your pasted lyrics to downloaded timing on this phone."
+                            existing.source == LyricsSource.DOWNLOADED_CACHE -> {
+                                "Reused downloaded synchronized lyrics."
+                            }
+                            else -> "Found synchronized lyrics without local generation."
+                        }
+                    )
+                    workDir.deleteRecursively()
+                    return
+                }
+                writeAtomically(metadataSearchMarker, "done")
+            } catch (_: LocalAiCanceledException) {
+                return
+            } catch (_: Throwable) {
+                // Offline or unavailable LRCLIB must not prevent the private local fallback.
+                writeAtomically(metadataSearchMarker, "unavailable")
+            }
+        }
+
         if (!supportsNativeRuntime()) {
-            fail(
-                song,
-                token,
-                "On-device AI needs a 64-bit ARM phone (arm64-v8a). Playback and all other lyrics features still work."
-            )
+            val localFallback = LyricsRepository(context).findLocalFallback(song)
+            ensureCurrent(token)
+            if (localFallback != null) {
+                val alignPastedLyrics = request.mode == AiLyricsMode.ALIGN_KNOWN_LYRICS
+                complete(
+                    request,
+                    token,
+                    if (alignPastedLyrics) {
+                        alignKnownLyricsToTimedResult(request, localFallback.rawLrc)
+                    } else {
+                        localFallback.rawLrc
+                    },
+                    if (alignPastedLyrics) {
+                        AiLyricsResultSource.ALIGNED_ON_DEVICE
+                    } else {
+                        AiLyricsResultSource.LOCAL_FILE
+                    },
+                    "Used a same-folder LRC after the online search."
+                )
+                workDir.deleteRecursively()
+            } else {
+                fail(
+                    song,
+                    token,
+                    "No synchronized online or same-folder LRC was found. The local audio fallback needs a 64-bit ARM phone (arm64-v8a)."
+                )
+            }
             return
         }
 
@@ -210,44 +379,109 @@ object OnDeviceAiLyricsManager {
             try {
                 ensureCurrent(token)
                 if (attemptIndex > 0) {
-                    updateIfCurrent(
-                        token,
-                        state.copy(
-                            phase = AiJobPhase.DOWNLOADING_MODEL,
-                            progress = 0,
-                            message = "Memory was tight, so Lyr switched automatically to the compact model."
-                        )
-                    )
                     System.gc()
                     Thread.sleep(500L)
                 }
                 val model = ensureModel(context, spec, song.id, token)
-                val rawLrc = processSong(
+                val localResult = processSong(
                     context = context,
                     song = song,
-                    mode = mode,
-                    knownLyrics = knownLyrics,
-                    language = language,
+                    mode = request.mode,
+                    knownLyrics = request.knownLyrics,
+                    language = request.language,
                     modelFile = model,
                     modelSpec = spec,
                     token = token
                 )
                 ensureCurrent(token)
-                if (LrcParser.parse(rawLrc).isEmpty()) {
+                if (LrcParser.parse(localResult.rawLrc).isEmpty()) {
                     throw LocalAiException(
                         "The local model did not find usable sung words. Try Known lyrics mode or another recording."
                     )
                 }
+
                 updateIfCurrent(
                     token,
                     AiLyricsJobState(
                         songId = song.id,
-                        phase = AiJobPhase.COMPLETED,
-                        progress = 100,
-                        rawLrc = rawLrc,
-                        message = spec.displayName
+                        phase = AiJobPhase.SEARCHING_RECOGNIZED,
+                        progress = 95,
+                        message = "Searching online again with words heard on this phone…"
                     )
                 )
+                val recognizedMatch = try {
+                    LyricsRepository(context).findOnlineFromRecognizedPhrases(
+                        song,
+                        localResult.recognizedPhrases
+                    )
+                } catch (_: Throwable) {
+                    null
+                }
+                ensureCurrent(token)
+                if (recognizedMatch != null) {
+                    val alignPastedLyrics = request.mode == AiLyricsMode.ALIGN_KNOWN_LYRICS
+                    complete(
+                        request,
+                        token,
+                        if (alignPastedLyrics) {
+                            alignKnownLyricsToTimedResult(request, recognizedMatch.rawLrc)
+                        } else {
+                            recognizedMatch.rawLrc
+                        },
+                        if (alignPastedLyrics) {
+                            AiLyricsResultSource.ALIGNED_ON_DEVICE
+                        } else {
+                            AiLyricsResultSource.ONLINE
+                        },
+                        if (alignPastedLyrics) {
+                            "Matched online timing and aligned your pasted lyrics on this phone."
+                        } else {
+                            "Matched synchronized lyrics after local listening."
+                        }
+                    )
+                    jobWorkDirectory(context).deleteRecursively()
+                    return
+                }
+
+                val localFallback = LyricsRepository(context).findLocalFallback(song)
+                ensureCurrent(token)
+                if (localFallback != null) {
+                    val alignPastedLyrics = request.mode == AiLyricsMode.ALIGN_KNOWN_LYRICS
+                    complete(
+                        request,
+                        token,
+                        if (alignPastedLyrics) {
+                            alignKnownLyricsToTimedResult(request, localFallback.rawLrc)
+                        } else {
+                            localFallback.rawLrc
+                        },
+                        if (alignPastedLyrics) {
+                            AiLyricsResultSource.ALIGNED_ON_DEVICE
+                        } else {
+                            AiLyricsResultSource.LOCAL_FILE
+                        },
+                        "Used a same-folder LRC after local listening and both online searches."
+                    )
+                    jobWorkDirectory(context).deleteRecursively()
+                    return
+                }
+
+                updateIfCurrent(
+                    token,
+                    state.copy(
+                        phase = AiJobPhase.FINALIZING,
+                        progress = 98,
+                        message = "No reliable online match · building local phrase timing…"
+                    )
+                )
+                complete(
+                    request,
+                    token,
+                    localResult.rawLrc,
+                    AiLyricsResultSource.ON_DEVICE,
+                    spec.displayName
+                )
+                jobWorkDirectory(context).deleteRecursively()
                 return
             } catch (_: LocalAiCanceledException) {
                 return
@@ -268,6 +502,14 @@ object OnDeviceAiLyricsManager {
             } catch (memoryError: OutOfMemoryError) {
                 lastMemoryFailure = memoryError
                 if (spec == BASE_MODEL || attemptIndex == attempts.lastIndex) break
+                updateIfCurrent(
+                    token,
+                    state.copy(
+                        phase = AiJobPhase.DOWNLOADING_MODEL,
+                        progress = 0,
+                        message = "Memory was tight, so Lyr switched automatically to the compact model."
+                    )
+                )
             } catch (error: Throwable) {
                 if (error is ThreadDeath) throw error
                 if (generation.get() == token) fail(song, token, error.userFacingMessage())
@@ -284,6 +526,31 @@ object OnDeviceAiLyricsManager {
         }
     }
 
+    /** Keeps Known lyrics mode exact while reusing already synchronized online cue timing. */
+    private fun alignKnownLyricsToTimedResult(request: JobRequest, rawLrc: String): String {
+        val lines = LrcParser.parse(rawLrc)
+        if (lines.isEmpty()) return rawLrc
+        val durationMs = request.song.durationMs.takeIf { it > 0L }
+            ?: lines.last().endTimestampMs
+            ?: (lines.last().timestampMs + DEFAULT_ONLINE_CUE_DURATION_MS)
+        val segments = lines.mapIndexed { index, line ->
+            val nextStart = lines.getOrNull(index + 1)?.timestampMs
+            val endMs = line.endTimestampMs
+                ?: nextStart
+                ?: (line.timestampMs + DEFAULT_ONLINE_CUE_DURATION_MS).coerceAtMost(durationMs)
+            OnDeviceLyricsProcessor.Segment(
+                startMs = line.timestampMs,
+                endMs = endMs.coerceAtLeast(line.timestampMs + MIN_ONLINE_CUE_DURATION_MS),
+                text = line.text
+            )
+        }
+        return OnDeviceLyricsProcessor.alignKnownLyricsLrc(
+            request.knownLyrics,
+            segments,
+            durationMs
+        )
+    }
+
     private fun processSong(
         context: Context,
         song: Song,
@@ -293,63 +560,72 @@ object OnDeviceAiLyricsManager {
         modelFile: File,
         modelSpec: ModelSpec,
         token: Int
-    ): String {
-        val workDir = File(context.cacheDir, "local-ai/${song.id}-$token")
-        workDir.deleteRecursively()
+    ): LocalProcessingResult {
+        val workDir = jobWorkDirectory(context)
         if (!workDir.mkdirs() && !workDir.isDirectory) {
             throw LocalAiException("Lyr could not create temporary space for local processing.")
         }
-        checkAudioStorage(context, song.durationMs)
 
         var whisperModel: WhisperModel? = null
         try {
-            updateIfCurrent(
-                token,
-                AiLyricsJobState(
-                    songId = song.id,
-                    phase = AiJobPhase.PREPARING_AUDIO,
-                    progress = 36,
-                    message = "Decoding MP3/M4A/WAV/FLAC locally…"
-                )
-            )
-            val decoded = LocalAudioDecoder.decodeToWhisperWav(
-                context = context,
-                source = song.contentUri,
-                outputFile = File(workDir, "decoded-16k-mono.wav"),
-                fallbackDurationMs = song.durationMs,
-                checkCanceled = { ensureCurrent(token) },
-                onProgress = { decodeProgress ->
-                    updateIfCurrent(
-                        token,
-                        state.copy(
-                            phase = AiJobPhase.PREPARING_AUDIO,
-                            progress = 36 + (decodeProgress * 12 / 100),
-                            message = "Decoding audio entirely on this phone…"
-                        )
+            val decoded = readDecodedCheckpoint(workDir) ?: run {
+                checkAudioStorage(context, song.durationMs)
+                updateIfCurrent(
+                    token,
+                    AiLyricsJobState(
+                        songId = song.id,
+                        phase = AiJobPhase.PREPARING_AUDIO,
+                        progress = 36,
+                        message = "Preparing MP3/M4A/WAV/FLAC locally…"
                     )
-                }
-            )
-            ensureCurrent(token)
-
-            updateIfCurrent(
-                token,
-                state.copy(
-                    phase = AiJobPhase.PROCESSING,
-                    progress = 50,
-                    message = "Loading ${modelSpec.displayName} into phone memory…"
                 )
-            )
-            val loadedModel = runBlocking { Whisper.loadModel(context, modelFile.absolutePath) }
-            whisperModel = loadedModel
+                LocalAudioDecoder.decodeToWhisperWav(
+                    context = context,
+                    source = song.contentUri,
+                    outputFile = File(workDir, DECODED_AUDIO_FILE),
+                    fallbackDurationMs = song.durationMs,
+                    checkCanceled = { ensureCurrent(token) },
+                    onProgress = { decodeProgress ->
+                        updateIfCurrent(
+                            token,
+                            state.copy(
+                                phase = AiJobPhase.PREPARING_AUDIO,
+                                progress = 36 + (decodeProgress * 12 / 100),
+                                message = "Preparing audio entirely on this phone…"
+                            )
+                        )
+                    }
+                ).also { persistDecodedCheckpoint(workDir, it) }
+            }
             ensureCurrent(token)
 
             val chunkCount = WhisperWavChunks.count(decoded.sampleCount)
             if (chunkCount <= 0) throw LocalAiException("The decoded recording is empty.")
-            val recognized = mutableListOf<OnDeviceLyricsProcessor.Segment>()
+            var checkpoint = readRecognitionCheckpoint(workDir)
+                ?: RecognitionCheckpoint(0, emptyList())
+            if (checkpoint.nextChunkIndex !in 0..chunkCount) {
+                checkpoint = RecognitionCheckpoint(0, emptyList())
+            }
+            val recognized = checkpoint.segments.toMutableList()
             val chunkFile = File(workDir, "current-chunk.wav")
             val threads = inferenceThreads(context)
 
-            for (chunkIndex in 0 until chunkCount) {
+            var loadedModel: WhisperModel? = null
+            if (checkpoint.nextChunkIndex < chunkCount) {
+                updateIfCurrent(
+                    token,
+                    state.copy(
+                        phase = AiJobPhase.PROCESSING,
+                        progress = 50,
+                        message = "Loading ${modelSpec.displayName} into phone memory…"
+                    )
+                )
+                loadedModel = runBlocking { Whisper.loadModel(context, modelFile.absolutePath) }
+                whisperModel = loadedModel
+                ensureCurrent(token)
+            }
+
+            for (chunkIndex in checkpoint.nextChunkIndex until chunkCount) {
                 ensureCurrent(token)
                 if (modelSpec == SMALL_MODEL && isSystemLowOnMemory(context)) {
                     throw OutOfMemoryError("Android reported low memory before local inference.")
@@ -360,18 +636,19 @@ object OnDeviceAiLyricsManager {
                     totalSamples = decoded.sampleCount,
                     index = chunkIndex
                 )
-                val progressBefore = 51 + ((chunkIndex * 46f) / chunkCount).roundToInt()
+                val progressBefore = 51 + ((chunkIndex * 42f) / chunkCount).roundToInt()
                 updateIfCurrent(
                     token,
                     state.copy(
                         phase = AiJobPhase.PROCESSING,
-                        progress = progressBefore.coerceIn(51, 96),
+                        progress = progressBefore.coerceIn(51, 93),
                         message = "Listening locally · part ${chunkIndex + 1} of $chunkCount"
                     )
                 )
                 val result = runBlocking {
                     Whisper.transcribe(
-                        model = loadedModel,
+                        model = loadedModel
+                            ?: throw LocalAiException("The local AI model was not loaded."),
                         audioPath = chunk.file.absolutePath,
                         config = WhisperConfig(
                             language = language,
@@ -395,13 +672,17 @@ object OnDeviceAiLyricsManager {
                         )
                     }
                 }
+                persistRecognitionCheckpoint(
+                    workDir,
+                    RecognitionCheckpoint(chunkIndex + 1, recognized.toList())
+                )
                 chunkFile.delete()
                 updateIfCurrent(
                     token,
                     state.copy(
                         phase = AiJobPhase.PROCESSING,
-                        progress = 51 + (((chunkIndex + 1) * 46f) / chunkCount).roundToInt(),
-                        message = "Finished local part ${chunkIndex + 1} of $chunkCount"
+                        progress = 51 + (((chunkIndex + 1) * 42f) / chunkCount).roundToInt(),
+                        message = "Saved local part ${chunkIndex + 1} of $chunkCount"
                     )
                 )
             }
@@ -420,11 +701,11 @@ object OnDeviceAiLyricsManager {
                 token,
                 state.copy(
                     phase = AiJobPhase.PROCESSING,
-                    progress = 98,
-                    message = "Building editable phrase start/end times…"
+                    progress = 94,
+                    message = "Analyzing locally heard phrases…"
                 )
             )
-            return when (mode) {
+            val rawLrc = when (mode) {
                 AiLyricsMode.AUDIO_ONLY -> OnDeviceLyricsProcessor.audioOnlyLrc(
                     cleanSegments,
                     decoded.durationMs
@@ -435,15 +716,18 @@ object OnDeviceAiLyricsManager {
                     decoded.durationMs
                 )
             }
+            return LocalProcessingResult(
+                rawLrc = rawLrc,
+                recognizedPhrases = cleanSegments.map { it.text }
+            )
         } finally {
             whisperModel?.let { model ->
                 try {
                     Whisper.releaseModel(model)
                 } catch (_: Throwable) {
-                    // The process is already unwinding; temporary files must still be removed.
+                    // The process is already unwinding; a later run can resume its saved chunks.
                 }
             }
-            workDir.deleteRecursively()
         }
     }
 
@@ -456,21 +740,24 @@ object OnDeviceAiLyricsManager {
         val destination = modelFile(context, spec)
         destination.parentFile?.mkdirs()
 
-        // A size check is deliberately enough for fast UI status updates, but every inference
-        // job verifies the complete persisted model before native code is allowed to load it.
+        // Private app files cannot be changed by another app. After the first complete SHA-256
+        // verification, a length/mtime marker avoids hashing 60–190 MB again on every song.
         usableModelFile(context, spec)?.let { existingModel ->
+            if (isPreviouslyVerified(existingModel, spec)) return existingModel
             updateIfCurrent(
                 token,
                 AiLyricsJobState(
                     songId = songId,
                     phase = AiJobPhase.DOWNLOADING_MODEL,
                     progress = 35,
-                    message = "Verifying the downloaded model…"
+                    message = "Verifying the downloaded model once…"
                 )
             )
             if (sha256(existingModel, token).equals(spec.sha256, ignoreCase = true)) {
+                markModelVerified(existingModel, spec)
                 return existingModel
             }
+            verifiedModelMarker(existingModel).delete()
             existingModel.delete()
         }
 
@@ -527,6 +814,7 @@ object OnDeviceAiLyricsManager {
             }
             partial.delete()
         }
+        markModelVerified(destination, spec)
         return destination
     }
 
@@ -617,7 +905,7 @@ object OnDeviceAiLyricsManager {
             UNKNOWN_AUDIO_TEMP_BYTES
         }
         val required = expectedPcmBytes + AUDIO_STORAGE_RESERVE_BYTES
-        if (availableBytes(context.cacheDir) < required) {
+        if (availableBytes(jobDirectory(context)) < required) {
             throw InsufficientStorageException(
                 "Lyr needs about ${formatMegabytes(required)} MB free for temporary local audio processing."
             )
@@ -628,6 +916,7 @@ object OnDeviceAiLyricsManager {
         val file = modelFile(context, spec)
         if (!file.exists()) return null
         if (file.length() == spec.bytes) return file
+        verifiedModelMarker(file).delete()
         file.delete()
         return null
     }
@@ -660,7 +949,11 @@ object OnDeviceAiLyricsManager {
 
     private fun inferenceThreads(context: Context): Int {
         val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val maximum = if (manager.isLowRamDevice || manager.memoryClass < 256) 2 else 4
+        val maximum = when {
+            manager.isLowRamDevice || manager.memoryClass < 256 -> 2
+            totalRam(context) >= SMALL_MODEL_RAM_THRESHOLD_BYTES -> 6
+            else -> 4
+        }
         return Runtime.getRuntime().availableProcessors().coerceIn(1, maximum)
     }
 
@@ -676,12 +969,256 @@ object OnDeviceAiLyricsManager {
         }
     }
 
+    private fun complete(
+        request: JobRequest,
+        token: Int,
+        rawLrc: String,
+        source: AiLyricsResultSource,
+        message: String
+    ) {
+        updateIfCurrent(
+            token,
+            AiLyricsJobState(
+                songId = request.song.id,
+                phase = AiJobPhase.COMPLETED,
+                progress = 100,
+                rawLrc = rawLrc,
+                resultSource = source,
+                message = message,
+                resumed = state.resumed
+            )
+        )
+    }
+
+    private fun jobDirectory(context: Context): File = File(context.filesDir, JOB_DIRECTORY)
+
+    private fun jobWorkDirectory(context: Context): File = File(jobDirectory(context), JOB_WORK_DIRECTORY)
+
+    private fun persistRequest(context: Context, request: JobRequest) {
+        val song = request.song
+        val json = JSONObject().apply {
+            put("requestId", request.requestId)
+            put("mode", request.mode.name)
+            put("knownLyrics", request.knownLyrics)
+            put("language", request.language)
+            put("song", JSONObject().apply {
+                put("id", song.id)
+                put("title", song.title)
+                put("sourceTitle", song.sourceTitle)
+                put("artist", song.artist)
+                put("album", song.album)
+                put("durationMs", song.durationMs)
+                put("dateAddedSeconds", song.dateAddedSeconds)
+                put("contentUri", song.contentUri.toString())
+                put("albumId", song.albumId)
+                put("albumArtUri", song.albumArtUri?.toString() ?: "")
+                put("fileName", song.fileName)
+                put("relativePath", song.relativePath ?: "")
+                put("legacyDataPath", song.legacyDataPath ?: "")
+            })
+        }
+        synchronized(PERSISTENCE_LOCK) {
+            writeAtomically(File(jobDirectory(context), REQUEST_FILE), json.toString())
+        }
+    }
+
+    private fun readPersistedRequest(context: Context): JobRequest? {
+        return try {
+        val file = File(jobDirectory(context), REQUEST_FILE)
+        if (!file.isFile) return null
+        val json = JSONObject(file.readText(Charsets.UTF_8))
+        val songJson = json.getJSONObject("song")
+        val albumArt = songJson.optString("albumArtUri").takeIf { it.isNotBlank() }
+        JobRequest(
+            requestId = json.getLong("requestId"),
+            song = Song(
+                id = songJson.getLong("id"),
+                title = songJson.getString("title"),
+                sourceTitle = songJson.getString("sourceTitle"),
+                artist = songJson.getString("artist"),
+                album = songJson.getString("album"),
+                durationMs = songJson.getLong("durationMs"),
+                dateAddedSeconds = songJson.optLong("dateAddedSeconds", 0L),
+                contentUri = android.net.Uri.parse(songJson.getString("contentUri")),
+                albumId = songJson.optLong("albumId", -1L),
+                albumArtUri = albumArt?.let(android.net.Uri::parse),
+                fileName = songJson.optString("fileName"),
+                relativePath = songJson.optString("relativePath").takeIf { it.isNotBlank() },
+                legacyDataPath = songJson.optString("legacyDataPath").takeIf { it.isNotBlank() }
+            ),
+            mode = AiLyricsMode.valueOf(json.getString("mode")),
+            knownLyrics = json.optString("knownLyrics"),
+            language = json.optString("language", "auto")
+        )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun persistState(context: Context, value: AiLyricsJobState) {
+        if (currentRequest == null) return
+        val json = JSONObject().apply {
+            value.songId?.let { put("songId", it) }
+            put("phase", value.phase.name)
+            put("progress", value.progress)
+            put("message", value.message ?: "")
+            put("rawLrc", value.rawLrc ?: "")
+            put("resultSource", value.resultSource?.name ?: "")
+            put("resumed", value.resumed)
+        }
+        synchronized(PERSISTENCE_LOCK) {
+            writeAtomically(File(jobDirectory(context), STATE_FILE), json.toString())
+        }
+    }
+
+    private fun readPersistedState(context: Context): AiLyricsJobState? {
+        return try {
+        val file = File(jobDirectory(context), STATE_FILE)
+        if (!file.isFile) return null
+        val json = JSONObject(file.readText(Charsets.UTF_8))
+        AiLyricsJobState(
+            songId = json.optLong("songId", -1L).takeIf { it >= 0L },
+            phase = AiJobPhase.valueOf(json.getString("phase")),
+            progress = json.optInt("progress", 0),
+            message = json.optString("message").takeIf { it.isNotBlank() },
+            rawLrc = json.optString("rawLrc").takeIf { it.isNotBlank() },
+            resultSource = json.optString("resultSource").takeIf { it.isNotBlank() }
+                ?.let(AiLyricsResultSource::valueOf),
+            resumed = json.optBoolean("resumed", false)
+        )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun clearPersistedJob(context: Context, deleteWork: Boolean) {
+        synchronized(PERSISTENCE_LOCK) {
+            File(jobDirectory(context), REQUEST_FILE).delete()
+            File(jobDirectory(context), STATE_FILE).delete()
+            if (deleteWork) jobWorkDirectory(context).deleteRecursively()
+        }
+    }
+
+    private fun persistDecodedCheckpoint(
+        workDir: File,
+        decoded: LocalAudioDecoder.DecodedAudio
+    ) {
+        val json = JSONObject().apply {
+            put("durationMs", decoded.durationMs)
+            put("sampleCount", decoded.sampleCount)
+            put("fileLength", decoded.wavFile.length())
+        }
+        writeAtomically(File(workDir, DECODED_AUDIO_STATE_FILE), json.toString())
+    }
+
+    private fun readDecodedCheckpoint(workDir: File): LocalAudioDecoder.DecodedAudio? {
+        return try {
+        val wav = File(workDir, DECODED_AUDIO_FILE)
+        val stateFile = File(workDir, DECODED_AUDIO_STATE_FILE)
+        if (!wav.isFile || !stateFile.isFile) return null
+        val json = JSONObject(stateFile.readText(Charsets.UTF_8))
+        val sampleCount = json.getLong("sampleCount")
+        val expectedLength = json.getLong("fileLength")
+        if (sampleCount <= 0L || wav.length() != expectedLength || expectedLength != 44L + sampleCount * 2L) {
+            return null
+        }
+        LocalAudioDecoder.DecodedAudio(
+            wavFile = wav,
+            durationMs = json.getLong("durationMs"),
+            sampleCount = sampleCount
+        )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun persistRecognitionCheckpoint(
+        workDir: File,
+        checkpoint: RecognitionCheckpoint
+    ) {
+        val json = JSONObject().apply {
+            put("nextChunkIndex", checkpoint.nextChunkIndex)
+            put("segments", JSONArray().apply {
+                checkpoint.segments.forEach { segment ->
+                    put(JSONObject().apply {
+                        put("startMs", segment.startMs)
+                        put("endMs", segment.endMs)
+                        put("text", segment.text)
+                    })
+                }
+            })
+        }
+        writeAtomically(File(workDir, RECOGNITION_STATE_FILE), json.toString())
+    }
+
+    private fun readRecognitionCheckpoint(workDir: File): RecognitionCheckpoint? {
+        return try {
+        val file = File(workDir, RECOGNITION_STATE_FILE)
+        if (!file.isFile) return null
+        val json = JSONObject(file.readText(Charsets.UTF_8))
+        val array = json.getJSONArray("segments")
+        val segments = ArrayList<OnDeviceLyricsProcessor.Segment>(array.length())
+        for (index in 0 until array.length()) {
+            val item = array.getJSONObject(index)
+            segments += OnDeviceLyricsProcessor.Segment(
+                startMs = item.getLong("startMs"),
+                endMs = item.getLong("endMs"),
+                text = item.getString("text")
+            )
+        }
+        RecognitionCheckpoint(json.getInt("nextChunkIndex"), segments)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun verifiedModelMarker(model: File): File = File(model.parentFile, "${model.name}.verified")
+
+    private fun isPreviouslyVerified(model: File, spec: ModelSpec): Boolean {
+        return try {
+        val marker = verifiedModelMarker(model)
+        if (!marker.isFile) return false
+        val json = JSONObject(marker.readText(Charsets.UTF_8))
+        json.optString("sha256").equals(spec.sha256, ignoreCase = true) &&
+            json.optLong("bytes") == model.length() &&
+            json.optLong("lastModified") == model.lastModified()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun markModelVerified(model: File, spec: ModelSpec) {
+        val json = JSONObject().apply {
+            put("sha256", spec.sha256)
+            put("bytes", model.length())
+            put("lastModified", model.lastModified())
+        }
+        writeAtomically(verifiedModelMarker(model), json.toString())
+    }
+
+    private fun writeAtomically(file: File, content: String) {
+        file.parentFile?.mkdirs()
+        val temporary = File(file.parentFile, "${file.name}.tmp")
+        temporary.writeText(content, Charsets.UTF_8)
+        if (!temporary.renameTo(file)) {
+            file.writeText(content, Charsets.UTF_8)
+            temporary.delete()
+        }
+    }
+
     private fun updateIfCurrent(token: Int, newState: AiLyricsJobState) {
         if (generation.get() == token) updateState(newState)
     }
 
     private fun updateState(newState: AiLyricsJobState) {
         state = newState
+        applicationContext?.let { context ->
+            try {
+                persistState(context, newState)
+            } catch (_: Exception) {
+                // Runtime work can continue; the next checkpoint/state update will retry persistence.
+            }
+        }
         mainHandler.post {
             listeners.forEach { listener -> listener.onAiLyricsJobChanged(newState) }
         }
@@ -724,6 +1261,12 @@ object OnDeviceAiLyricsManager {
     private class ModelStorageException(message: String) : IOException(message)
     private class InsufficientStorageException(message: String) : IOException(message)
 
+    private val ONLINE_TIMING_SOURCES = setOf(
+        LyricsSource.DOWNLOADED_CACHE,
+        LyricsSource.LOCAL_SIDECAR,
+        LyricsSource.ONLINE_AUTO
+    )
+
     private val BASE_MODEL = ModelSpec(
         fileName = "ggml-base-q5_1.bin",
         displayName = "Compact multilingual model",
@@ -740,6 +1283,15 @@ object OnDeviceAiLyricsManager {
     private const val MODEL_REPOSITORY =
         "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
     private const val MODEL_DIRECTORY = "on-device-ai-models"
+    private const val JOB_DIRECTORY = "on-device-ai-job"
+    private const val JOB_WORK_DIRECTORY = "work"
+    private const val REQUEST_FILE = "request.json"
+    private const val STATE_FILE = "state.json"
+    private const val INITIAL_SEARCH_MARKER = "metadata-search.done"
+    private const val DECODED_AUDIO_FILE = "decoded-16k-mono.wav"
+    private const val DECODED_AUDIO_STATE_FILE = "decoded-audio.json"
+    private const val RECOGNITION_STATE_FILE = "recognized-chunks.json"
+    private val PERSISTENCE_LOCK = Any()
     private const val SMALL_MODEL_RAM_THRESHOLD_BYTES = 5_500L * 1024L * 1024L
     private const val SMALL_MODEL_MIN_MEMORY_CLASS_MB = 384
     private const val DOWNLOAD_CONNECT_TIMEOUT_MS = 30_000
@@ -748,4 +1300,6 @@ object OnDeviceAiLyricsManager {
     private const val MODEL_STORAGE_RESERVE_BYTES = 64L * 1024L * 1024L
     private const val AUDIO_STORAGE_RESERVE_BYTES = 24L * 1024L * 1024L
     private const val UNKNOWN_AUDIO_TEMP_BYTES = 160L * 1024L * 1024L
+    private const val DEFAULT_ONLINE_CUE_DURATION_MS = 4_000L
+    private const val MIN_ONLINE_CUE_DURATION_MS = 600L
 }

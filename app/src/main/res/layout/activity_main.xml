@@ -46,6 +46,15 @@
             </LinearLayout>
 
             <ImageButton
+                android:id="@+id/refreshLibraryButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/refresh_library"
+                android:padding="11dp"
+                android:src="@drawable/ic_refresh" />
+
+            <ImageButton
                 android:id="@+id/layoutModeButton"
                 android:layout_width="48dp"
                 android:layout_height="48dp"

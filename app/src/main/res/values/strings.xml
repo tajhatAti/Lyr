@@ -196,20 +196,20 @@
 
     <!-- Fully on-device audio transcription and known-text alignment -->
     <string name="create_lyrics_with_ai">Create lyrics with AI</string>
-    <string name="ai_sync_title">Create synchronized lyrics on this phone</string>
-    <string name="ai_sync_explanation">Audio only listens to the song, transcribes sung words and creates editable phrase start/end times. Known lyrics aligns your exact pasted lines to the recording instead.</string>
-    <string name="ai_local_privacy">Private on-device processing: song audio is decoded and heard by AI using only this phone’s CPU and RAM. Audio is never uploaded. A multilingual model is downloaded once, verified, and then works offline.</string>
+    <string name="ai_sync_title">Smart Lyrics</string>
+    <string name="ai_sync_explanation">Searches first, listens locally only when needed, then creates timing only as the final fallback.</string>
+    <string name="ai_local_privacy">Audio processing stays private on this phone. Only song details or a few recognized text phrases are searched online; audio is never uploaded.</string>
     <string name="ai_model_checking">Checking this phone’s RAM and local model…</string>
     <string name="ai_model_selected">Automatic choice: %1$s · phone RAM %2$s GB · one-time download %3$d MB</string>
     <string name="ai_model_ready">%1$s is ready · offline processing available · phone RAM %2$s GB</string>
-    <string name="ai_model_unsupported">On-device AI requires a 64-bit ARM phone. The music player and non-AI lyrics features still work.</string>
+    <string name="ai_model_unsupported">Online Smart Lyrics is available. The private local fallback additionally requires a 64-bit ARM phone.</string>
     <string name="ai_delete_model">Delete downloaded model</string>
     <string name="ai_model_deleted">Downloaded AI model removed. Lyr will choose and download one again when needed.</string>
     <string name="ai_mode_audio_only">Audio only</string>
     <string name="ai_mode_known_lyrics">Known lyrics</string>
     <string name="ai_known_lyrics_hint">Paste the exact lyrics, preferably one sung phrase per line</string>
     <string name="ai_prioritize_bengali">Prioritize Bengali transcription</string>
-    <string name="ai_start">Start AI on this phone</string>
+    <string name="ai_start">Find or create synced lyrics</string>
     <string name="ai_cancel">Stop local processing</string>
     <string name="ai_idle_status">Ready. No song audio leaves this phone.</string>
     <string name="ai_downloading_status">Downloading and verifying the local model… %1$d%%</string>
@@ -220,14 +220,35 @@
     <string name="ai_canceled_status">Local processing stopped. Temporary decoded audio was removed.</string>
     <string name="ai_result_preview">Unsaved synchronized preview</string>
     <string name="ai_review_and_edit">Review &amp; edit draft</string>
-    <string name="ai_local_confirmation_title">Run AI using this phone?</string>
-    <string name="ai_local_confirmation_message">%1$s\n\nLyr will use this phone’s CPU and RAM. The first run may download a verified %2$d MB multilingual model; later runs work offline. The song is never uploaded. Processing can take longer than the song and may warm the phone, so keep enough battery or connect a charger.</string>
-    <string name="ai_confirm_local">Start private local processing</string>
+    <string name="ai_local_confirmation_title">Start Smart Lyrics?</string>
+    <string name="ai_local_confirmation_message">Lyr searches synchronized lyrics first. Only if that fails, %1$s listens locally and may need a one-time verified %2$d MB download. It then searches again using recognized text before creating a local draft. Audio is never uploaded. Progress and completed chunks are saved, and a notification keeps eligible work running when you close this screen.</string>
+    <string name="ai_confirm_local">Start Smart Lyrics</string>
     <string name="ai_known_lyrics_required">Paste the lyrics to align first.</string>
     <string name="ai_job_already_running">An on-device AI job is already running. Stop it before starting another.</string>
     <string name="ai_other_song_running">AI is still processing another song on this phone. Return to that song or stop the job first.</string>
-    <string name="ai_draft_loaded_in_editor">AI draft loaded. Edit every word and start/end timestamp, then tap Save to keep it privately.</string>
+    <string name="ai_draft_loaded_in_editor">Local draft loaded. Review every word and timestamp, then tap Save to keep it privately.</string>
+    <string name="smart_lyrics_loaded_in_editor">Synchronized lyrics loaded in the editor.</string>
     <string name="ai_local_detail">%1$s</string>
+    <string name="smart_lyrics_action">Smart Lyrics</string>
+    <string name="refresh_library">Refresh music library</string>
+    <string name="library_refresh_failed">Could not refresh the music library. Please try again.</string>
+    <string name="ai_smart_privacy_short">Fast path: details search → local listening → retry search → local sync only if needed. Audio never leaves this phone.</string>
+    <string name="ai_step_online">Search online by song details</string>
+    <string name="ai_step_prepare">Prepare model and audio locally</string>
+    <string name="ai_step_listen">Listen and identify on this phone</string>
+    <string name="ai_step_retry">Retry online with recognized words</string>
+    <string name="ai_step_finish">Use downloaded lyrics or build local sync</string>
+    <string name="ai_searching_metadata_status">Searching for synchronized lyrics by title and artist…</string>
+    <string name="ai_searching_recognized_status">Local listening finished. Checking online again with recognized words…</string>
+    <string name="ai_finalizing_status">No reliable online version was found. Finishing the local synchronized draft…</string>
+    <string name="ai_online_completed_status">Synchronized online lyrics found, duration-corrected, and cached for offline reuse.</string>
+    <string name="ai_local_file_completed_status">A synchronized same-folder LRC was found and loaded.</string>
+    <string name="ai_aligned_completed_status">Your exact pasted lyrics were aligned on this phone using downloaded synchronized timing. Review before saving.</string>
+    <string name="ai_online_only_confirmation_message">Lyr will first search LRCLIB using song details. This phone cannot run the local ARM64 fallback, so no audio will be processed if online lyrics are unavailable. Audio is never uploaded.</string>
+    <string name="ai_background_channel_name">On-device lyrics</string>
+    <string name="ai_background_channel_description">Progress for private local lyrics work</string>
+    <string name="ai_background_notification_title">Smart Lyrics is working</string>
+    <string name="ai_background_notification_text">Progress is saved automatically.</string>
 
     <!-- Working sleep timer -->
     <string name="close">Close</string>

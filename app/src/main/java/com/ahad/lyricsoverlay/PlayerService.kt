@@ -443,6 +443,20 @@ class PlayerService : Service() {
         return true
     }
 
+    /** Re-reads a newly downloaded smart-pipeline result without deleting private user lyrics. */
+    fun reloadLyricsFromStorage() {
+        val song = currentSong() ?: return
+        val requestGeneration = ++lyricsGeneration
+        updateLyricsLoadState(LyricsLoadState.SEARCHING)
+        lyricsExecutor.execute {
+            val restored = lyricsRepository.findLyrics(song)
+            mainHandler.post {
+                if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
+                applyLyricsResult(restored)
+            }
+        }
+    }
+
     /** Removes only the explicit user choice/edit, then restores cache, sidecar, or online lookup. */
     fun restoreAutomaticLyrics() {
         val song = currentSong() ?: return

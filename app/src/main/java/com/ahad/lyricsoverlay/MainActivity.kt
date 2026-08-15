@@ -1,6 +1,8 @@
 package com.ahad.lyricsoverlay
 
 import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -39,6 +41,7 @@ class MainActivity : AppCompatActivity(),
     private lateinit var mainRoot: View
     private lateinit var libraryContentContainer: ViewGroup
     private lateinit var librarySummary: TextView
+    private lateinit var refreshLibraryButton: ImageButton
     private lateinit var layoutModeButton: ImageButton
     private lateinit var recyclerView: RecyclerView
     private lateinit var emptyMessage: TextView
@@ -68,6 +71,8 @@ class MainActivity : AppCompatActivity(),
     private var lyricsLoadState = LyricsLoadState.IDLE
     private var overlayPermissionPromptShown = false
     private var layoutAnimationGeneration = 0
+    private var libraryScanGeneration = 0
+    private var refreshAnimator: ObjectAnimator? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -144,6 +149,7 @@ class MainActivity : AppCompatActivity(),
     override fun onDestroy() {
         AppPreferences.unregisterListener(this)
         scannerExecutor.shutdownNow()
+        refreshAnimator?.cancel()
         adapter.release()
         super.onDestroy()
     }
@@ -252,6 +258,7 @@ class MainActivity : AppCompatActivity(),
         mainRoot = findViewById(R.id.mainRoot)
         libraryContentContainer = findViewById(R.id.libraryContentContainer)
         librarySummary = findViewById(R.id.librarySummary)
+        refreshLibraryButton = findViewById(R.id.refreshLibraryButton)
         layoutModeButton = findViewById(R.id.layoutModeButton)
         recyclerView = findViewById(R.id.songRecyclerView)
         emptyMessage = findViewById(R.id.emptyMessage)
@@ -289,6 +296,13 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun setupTopControls() {
+        refreshLibraryButton.setOnClickListener {
+            if (hasAudioPermission()) {
+                scanMusicLibrary(preserveAnchor = true)
+            } else {
+                requestMissingPermissions(forceAudioRequest = true)
+            }
+        }
         findViewById<View>(R.id.settingsButton).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -361,23 +375,49 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun scanMusicLibrary(preserveAnchor: Boolean = false) {
+        val generation = ++libraryScanGeneration
+        startRefreshAnimation()
         if (!preserveAnchor || visibleSongs.isEmpty()) {
             emptyMessage.visibility = View.VISIBLE
             emptyMessage.setText(R.string.loading_music)
         }
         scannerExecutor.execute {
-            val result = MusicScannerUtil.scan(applicationContext)
+            val result = runCatching { MusicScannerUtil.scan(applicationContext) }
             runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                scannedSongs.clear()
-                scannedSongs.addAll(result)
-                playerService?.synchronizeSongMetadata(result)
-                sortAndDisplaySongs(preserveAnchor = preserveAnchor)
-                emptyMessage.visibility = if (visibleSongs.isEmpty()) View.VISIBLE else View.GONE
-                if (visibleSongs.isEmpty()) emptyMessage.setText(R.string.no_songs)
-                updateLibrarySummary()
+                if (isFinishing || isDestroyed || generation != libraryScanGeneration) return@runOnUiThread
+                stopRefreshAnimation()
+                result.onSuccess { songs ->
+                    scannedSongs.clear()
+                    scannedSongs.addAll(songs)
+                    playerService?.synchronizeSongMetadata(songs)
+                    sortAndDisplaySongs(preserveAnchor = preserveAnchor)
+                    emptyMessage.visibility = if (visibleSongs.isEmpty()) View.VISIBLE else View.GONE
+                    if (visibleSongs.isEmpty()) emptyMessage.setText(R.string.no_songs)
+                    updateLibrarySummary()
+                }.onFailure {
+                    emptyMessage.visibility = if (visibleSongs.isEmpty()) View.VISIBLE else View.GONE
+                    if (visibleSongs.isEmpty()) emptyMessage.setText(R.string.no_songs)
+                    Toast.makeText(this, R.string.library_refresh_failed, Toast.LENGTH_SHORT).show()
+                }
             }
         }
+    }
+
+    private fun startRefreshAnimation() {
+        refreshAnimator?.cancel()
+        refreshLibraryButton.isEnabled = false
+        refreshAnimator = ObjectAnimator.ofFloat(refreshLibraryButton, View.ROTATION, 0f, 360f).apply {
+            duration = 800L
+            repeatCount = ValueAnimator.INFINITE
+            start()
+        }
+    }
+
+    private fun stopRefreshAnimation() {
+        refreshAnimator?.cancel()
+        refreshAnimator = null
+        refreshLibraryButton.rotation = 0f
+        refreshLibraryButton.isEnabled = true
     }
 
     private fun sortAndDisplaySongs(preserveAnchor: Boolean) {
