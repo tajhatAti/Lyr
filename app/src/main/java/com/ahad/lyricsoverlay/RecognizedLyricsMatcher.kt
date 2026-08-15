@@ -7,7 +7,7 @@ internal object RecognizedLyricsMatcher {
 
     fun normalizedTokens(value: String): Set<String> = value
         .lowercase()
-        .replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+        .replace(Regex("""[^\p{L}\p{M}\p{N}]+"""), " ")
         .trim()
         .split(' ')
         .asSequence()
