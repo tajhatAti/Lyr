@@ -194,37 +194,40 @@
     <string name="floating_overlay_ready">Floating overlay ready</string>
     <string name="floating_overlay_verified">Overlay refreshed. Minimize Lyr to see the same timed line above other apps.</string>
 
-    <!-- Audio-only AI transcription and known-text alignment -->
+    <!-- Fully on-device audio transcription and known-text alignment -->
     <string name="create_lyrics_with_ai">Create lyrics with AI</string>
-    <string name="ai_sync_title">Create synchronized lyrics from this song</string>
-    <string name="ai_sync_explanation">Audio only listens to the song, transcribes the sung words and creates phrase start/end times. If you already have the words, Known lyrics aligns those exact lines instead.</string>
-    <string name="ai_upload_privacy">Cloud processing: the selected song audio is uploaded only after confirmation. The Lyr server is designed to delete the audio after completion, failure or cancellation. Results stay private unless you separately choose LRCLIB Publish.</string>
-    <string name="ai_server_address">Lyr AI server (HTTPS)</string>
-    <string name="ai_server_helper">Free CPU servers may sleep and can take much longer than the song. The address is saved only on this device.</string>
+    <string name="ai_sync_title">Create synchronized lyrics on this phone</string>
+    <string name="ai_sync_explanation">Audio only listens to the song, transcribes sung words and creates editable phrase start/end times. Known lyrics aligns your exact pasted lines to the recording instead.</string>
+    <string name="ai_local_privacy">Private on-device processing: song audio is decoded and heard by AI using only this phone’s CPU and RAM. Audio is never uploaded. A multilingual model is downloaded once, verified, and then works offline.</string>
+    <string name="ai_model_checking">Checking this phone’s RAM and local model…</string>
+    <string name="ai_model_selected">Automatic choice: %1$s · phone RAM %2$s GB · one-time download %3$d MB</string>
+    <string name="ai_model_ready">%1$s is ready · offline processing available · phone RAM %2$s GB</string>
+    <string name="ai_model_unsupported">On-device AI requires a 64-bit ARM phone. The music player and non-AI lyrics features still work.</string>
+    <string name="ai_delete_model">Delete downloaded model</string>
+    <string name="ai_model_deleted">Downloaded AI model removed. Lyr will choose and download one again when needed.</string>
     <string name="ai_mode_audio_only">Audio only</string>
     <string name="ai_mode_known_lyrics">Known lyrics</string>
     <string name="ai_known_lyrics_hint">Paste the exact lyrics, preferably one sung phrase per line</string>
     <string name="ai_prioritize_bengali">Prioritize Bengali transcription</string>
-    <string name="ai_start">Upload audio &amp; start AI</string>
-    <string name="ai_cancel">Cancel and delete upload</string>
-    <string name="ai_idle_status">Nothing has been uploaded.</string>
-    <string name="ai_uploading_status">Uploading audio… %1$d%%</string>
-    <string name="ai_queued_status">Uploaded · waiting for the free CPU worker…</string>
-    <string name="ai_processing_status">AI is listening and building phrase timings… %1$d%%</string>
-    <string name="ai_completed_status">AI draft ready. It has not been saved or published. Preview it with playback, then review every line before private Save.</string>
-    <string name="ai_failed_status">AI processing failed: %1$s</string>
-    <string name="ai_canceled_status">Canceled. The server was asked to delete the uploaded audio.</string>
+    <string name="ai_start">Start AI on this phone</string>
+    <string name="ai_cancel">Stop local processing</string>
+    <string name="ai_idle_status">Ready. No song audio leaves this phone.</string>
+    <string name="ai_downloading_status">Downloading and verifying the local model… %1$d%%</string>
+    <string name="ai_preparing_status">Decoding the song locally… %1$d%%</string>
+    <string name="ai_processing_status">AI is listening on this phone and building phrase timings… %1$d%%</string>
+    <string name="ai_completed_status">Local AI draft ready. It has not been saved or published. Preview it with playback, then review every word and start/end time before private Save.</string>
+    <string name="ai_failed_status">On-device AI failed: %1$s</string>
+    <string name="ai_canceled_status">Local processing stopped. Temporary decoded audio was removed.</string>
     <string name="ai_result_preview">Unsaved synchronized preview</string>
     <string name="ai_review_and_edit">Review &amp; edit draft</string>
-    <string name="ai_upload_confirmation_title">Upload this song for AI processing?</string>
-    <string name="ai_upload_confirmation_message">Lyr will send the currently playing audio to:\n%1$s\n\nThe server can process the full recording. It is designed to delete the uploaded audio after completion, failure or cancellation. The generated draft is not saved and is never published to LRCLIB automatically.</string>
-    <string name="ai_confirm_upload">Upload &amp; process</string>
-    <string name="ai_invalid_server">Enter the HTTPS address of a deployed Lyr AI server.</string>
+    <string name="ai_local_confirmation_title">Run AI using this phone?</string>
+    <string name="ai_local_confirmation_message">%1$s\n\nLyr will use this phone’s CPU and RAM. The first run may download a verified %2$d MB multilingual model; later runs work offline. The song is never uploaded. Processing can take longer than the song and may warm the phone, so keep enough battery or connect a charger.</string>
+    <string name="ai_confirm_local">Start private local processing</string>
     <string name="ai_known_lyrics_required">Paste the lyrics to align first.</string>
-    <string name="ai_job_already_running">An AI job is already running. Cancel it before starting another.</string>
-    <string name="ai_other_song_running">AI is still processing another song. Return to that song or cancel the job before starting a new one.</string>
-    <string name="ai_draft_loaded_in_editor">AI draft loaded. Edit any words or timestamps, then tap Save to keep it privately.</string>
-    <string name="ai_server_message">%1$s</string>
+    <string name="ai_job_already_running">An on-device AI job is already running. Stop it before starting another.</string>
+    <string name="ai_other_song_running">AI is still processing another song on this phone. Return to that song or stop the job first.</string>
+    <string name="ai_draft_loaded_in_editor">AI draft loaded. Edit every word and start/end timestamp, then tap Save to keep it privately.</string>
+    <string name="ai_local_detail">%1$s</string>
 
     <!-- Working sleep timer -->
     <string name="close">Close</string>

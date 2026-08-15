@@ -33,7 +33,6 @@ import com.google.android.material.progressindicator.LinearProgressIndicator
 import com.google.android.material.tabs.TabLayout
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
-import java.net.URL
 import java.util.Locale
 import java.util.concurrent.Executors
 
@@ -58,7 +57,8 @@ class LyricsActivity : AppCompatActivity(),
     private lateinit var searchButton: MaterialButton
     private lateinit var searchStatus: TextView
     private lateinit var onlineRecyclerView: RecyclerView
-    private lateinit var aiServerInput: TextInputEditText
+    private lateinit var aiModelStatus: TextView
+    private lateinit var deleteAiModelButton: MaterialButton
     private lateinit var aiModeToggle: MaterialButtonToggleGroup
     private lateinit var aiKnownLyricsLayout: TextInputLayout
     private lateinit var aiKnownLyricsInput: TextInputEditText
@@ -107,7 +107,7 @@ class LyricsActivity : AppCompatActivity(),
     private var publishGeneration = 0
     private var selectedTab = TAB_LIVE
 
-    private val aiJobListener = AiLyricsJobManager.Listener(::renderAiJobState)
+    private val aiJobListener = OnDeviceAiLyricsManager.Listener(::renderAiJobState)
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -149,12 +149,13 @@ class LyricsActivity : AppCompatActivity(),
             serviceConnection,
             Context.BIND_AUTO_CREATE
         )
-        AiLyricsJobManager.addListener(aiJobListener)
+        OnDeviceAiLyricsManager.addListener(aiJobListener)
     }
 
     override fun onResume() {
         super.onResume()
         updateOverlayButton()
+        if (::aiModelStatus.isInitialized) updateAiModelStatus()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -163,7 +164,7 @@ class LyricsActivity : AppCompatActivity(),
     }
 
     override fun onStop() {
-        AiLyricsJobManager.removeListener(aiJobListener)
+        OnDeviceAiLyricsManager.removeListener(aiJobListener)
         playerService?.removeListener(this)
         if (serviceBound) {
             try {
@@ -218,7 +219,7 @@ class LyricsActivity : AppCompatActivity(),
         }
         updateActiveLine(latestPositionMs)
         updateAiPreviewLine(latestPositionMs)
-        if (songChanged) renderAiJobState(AiLyricsJobManager.currentState())
+        if (songChanged) renderAiJobState(OnDeviceAiLyricsManager.currentState())
     }
 
     override fun onLyricsLoadStateChanged(state: LyricsLoadState) {
@@ -291,7 +292,8 @@ class LyricsActivity : AppCompatActivity(),
         searchButton = findViewById(R.id.searchLyricsButton)
         searchStatus = findViewById(R.id.onlineLyricsStatus)
         onlineRecyclerView = findViewById(R.id.onlineLyricsRecyclerView)
-        aiServerInput = findViewById(R.id.aiServerInput)
+        aiModelStatus = findViewById(R.id.aiModelStatus)
+        deleteAiModelButton = findViewById(R.id.deleteAiModelButton)
         aiModeToggle = findViewById(R.id.aiModeToggle)
         aiKnownLyricsLayout = findViewById(R.id.aiKnownLyricsInputLayout)
         aiKnownLyricsInput = findViewById(R.id.aiKnownLyricsInput)
@@ -313,10 +315,7 @@ class LyricsActivity : AppCompatActivity(),
         playPauseButton = findViewById(R.id.lyricsPlayPauseButton)
         timerButton = findViewById(R.id.lyricsTimerButton)
         seekBar.max = SEEK_MAX
-        val savedEndpoint = getSharedPreferences(AI_PREFERENCES, Context.MODE_PRIVATE)
-            .getString(KEY_AI_SERVER, null)
-            .orEmpty()
-        aiServerInput.setText(savedEndpoint.ifBlank { BuildConfig.AI_SYNC_BASE_URL })
+        updateAiModelStatus()
     }
 
     private fun setupTabs() {
@@ -388,8 +387,15 @@ class LyricsActivity : AppCompatActivity(),
                 }
             }
         }
-        startAiButton.setOnClickListener { confirmAiUpload() }
-        cancelAiButton.setOnClickListener { AiLyricsJobManager.cancel() }
+        startAiButton.setOnClickListener { confirmOnDeviceAi() }
+        cancelAiButton.setOnClickListener { OnDeviceAiLyricsManager.cancel() }
+        deleteAiModelButton.setOnClickListener {
+            if (OnDeviceAiLyricsManager.deleteDownloadedModels(applicationContext)) {
+                Toast.makeText(this, R.string.ai_model_deleted, Toast.LENGTH_LONG).show()
+                updateAiModelStatus()
+                OnDeviceAiLyricsManager.clearFinishedResult()
+            }
+        }
         reviewAiButton.setOnClickListener { loadAiDraftIntoEditor() }
         searchButton.setOnClickListener { searchOnline() }
         searchInput.setOnEditorActionListener { _, actionId, _ ->
@@ -501,24 +507,21 @@ class LyricsActivity : AppCompatActivity(),
         liveRecyclerView.layoutManager?.startSmoothScroll(scroller)
     }
 
-    private fun confirmAiUpload() {
+    private fun confirmOnDeviceAi() {
         val song = currentSong
         if (song == null) {
             Toast.makeText(this, R.string.no_song_for_lyrics, Toast.LENGTH_SHORT).show()
             return
         }
-        if (AiLyricsJobManager.currentState().isRunning) {
+        if (OnDeviceAiLyricsManager.currentState().isRunning) {
             Toast.makeText(this, R.string.ai_job_already_running, Toast.LENGTH_LONG).show()
             return
         }
-        val endpoint = validatedAiEndpoint(aiServerInput.text?.toString().orEmpty())
-        if (endpoint == null) {
-            findViewById<TextInputLayout>(R.id.aiServerInputLayout).error =
-                getString(R.string.ai_invalid_server)
-            aiServerInput.requestFocus()
+        val model = OnDeviceAiLyricsManager.modelStatus(applicationContext)
+        if (!model.supported) {
+            Toast.makeText(this, R.string.ai_model_unsupported, Toast.LENGTH_LONG).show()
             return
         }
-        findViewById<TextInputLayout>(R.id.aiServerInputLayout).error = null
         val mode = if (aiModeToggle.checkedButtonId == R.id.aiKnownLyricsModeButton) {
             AiLyricsMode.ALIGN_KNOWN_LYRICS
         } else {
@@ -531,19 +534,20 @@ class LyricsActivity : AppCompatActivity(),
             return
         }
         aiKnownLyricsLayout.error = null
-        getSharedPreferences(AI_PREFERENCES, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_AI_SERVER, endpoint)
-            .apply()
 
         MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.ai_upload_confirmation_title)
-            .setMessage(getString(R.string.ai_upload_confirmation_message, endpoint))
+            .setTitle(R.string.ai_local_confirmation_title)
+            .setMessage(
+                getString(
+                    R.string.ai_local_confirmation_message,
+                    model.displayName,
+                    model.downloadMegabytes
+                )
+            )
             .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.ai_confirm_upload) { _, _ ->
-                val started = AiLyricsJobManager.start(
+            .setPositiveButton(R.string.ai_confirm_local) { _, _ ->
+                val started = OnDeviceAiLyricsManager.start(
                     context = applicationContext,
-                    endpoint = endpoint,
                     song = song,
                     mode = mode,
                     knownLyrics = knownLyrics,
@@ -556,14 +560,39 @@ class LyricsActivity : AppCompatActivity(),
             .show()
     }
 
+    private fun updateAiModelStatus() {
+        val model = OnDeviceAiLyricsManager.modelStatus(applicationContext)
+        val ram = String.format(Locale.US, "%.1f", model.totalRamGigabytes)
+        aiModelStatus.text = when {
+            !model.supported -> getString(R.string.ai_model_unsupported)
+            model.downloaded -> getString(
+                R.string.ai_model_ready,
+                model.displayName,
+                ram
+            )
+            else -> getString(
+                R.string.ai_model_selected,
+                model.displayName,
+                ram,
+                model.downloadMegabytes
+            )
+        }
+        val running = OnDeviceAiLyricsManager.currentState().isRunning
+        deleteAiModelButton.visibility = if (model.downloaded && !running) View.VISIBLE else View.GONE
+        deleteAiModelButton.isEnabled = !running
+        startAiButton.isEnabled = model.supported && !running
+    }
+
     private fun renderAiJobState(state: AiLyricsJobState) {
         if (!::aiStatus.isInitialized || isFinishing || isDestroyed) return
         val belongsToCurrentSong = state.songId != null && state.songId == currentSong?.id
+        val model = OnDeviceAiLyricsManager.modelStatus(applicationContext)
         val controlsEnabled = !state.isRunning
-        aiServerInput.isEnabled = controlsEnabled
         aiKnownLyricsInput.isEnabled = controlsEnabled
         aiBengaliCheckBox.isEnabled = controlsEnabled
-        startAiButton.isEnabled = controlsEnabled
+        startAiButton.isEnabled = controlsEnabled && model.supported
+        deleteAiModelButton.isEnabled = controlsEnabled
+        deleteAiModelButton.visibility = if (model.downloaded && controlsEnabled) View.VISIBLE else View.GONE
         findViewById<MaterialButton>(R.id.aiAudioOnlyModeButton).isEnabled = controlsEnabled
         findViewById<MaterialButton>(R.id.aiKnownLyricsModeButton).isEnabled = controlsEnabled
         cancelAiButton.visibility = if (state.isRunning) View.VISIBLE else View.GONE
@@ -577,19 +606,23 @@ class LyricsActivity : AppCompatActivity(),
             aiProgress.setProgressCompat(state.progress, true)
             showAiPreview(emptyList())
             reviewAiButton.visibility = View.GONE
+            updateAiModelStatus()
             return
         }
 
         val statusText = when (state.phase) {
             AiJobPhase.IDLE -> getString(R.string.ai_idle_status)
-            AiJobPhase.UPLOADING -> getString(
-                R.string.ai_uploading_status,
-                ((state.progress * 100) / 58).coerceIn(0, 100)
+            AiJobPhase.DOWNLOADING_MODEL -> getString(
+                R.string.ai_downloading_status,
+                ((state.progress * 100) / 35).coerceIn(0, 100)
             )
-            AiJobPhase.QUEUED -> getString(R.string.ai_queued_status)
+            AiJobPhase.PREPARING_AUDIO -> getString(
+                R.string.ai_preparing_status,
+                (((state.progress - 36) * 100) / 12).coerceIn(0, 100)
+            )
             AiJobPhase.PROCESSING -> getString(
                 R.string.ai_processing_status,
-                (((state.progress - 60) * 100) / 40).coerceIn(0, 100)
+                (((state.progress - 50) * 100) / 48).coerceIn(0, 100)
             )
             AiJobPhase.COMPLETED -> getString(R.string.ai_completed_status)
             AiJobPhase.FAILED -> getString(
@@ -598,10 +631,8 @@ class LyricsActivity : AppCompatActivity(),
             )
             AiJobPhase.CANCELED -> getString(R.string.ai_canceled_status)
         }
-        aiStatus.text = if (!state.message.isNullOrBlank() &&
-            (state.phase == AiJobPhase.QUEUED || state.phase == AiJobPhase.PROCESSING)
-        ) {
-            "$statusText\n${getString(R.string.ai_server_message, state.message)}"
+        aiStatus.text = if (!state.message.isNullOrBlank() && state.isRunning) {
+            "$statusText\n${getString(R.string.ai_local_detail, state.message)}"
         } else {
             statusText
         }
@@ -620,6 +651,7 @@ class LyricsActivity : AppCompatActivity(),
         showAiPreview(resultLines)
         reviewAiButton.visibility = if (resultLines.isNotEmpty()) View.VISIBLE else View.GONE
         if (resultLines.isNotEmpty()) updateAiPreviewLine(latestPositionMs, force = true)
+        updateAiModelStatus()
     }
 
     private fun showAiPreview(lines: List<LrcLine>) {
@@ -645,7 +677,7 @@ class LyricsActivity : AppCompatActivity(),
     }
 
     private fun loadAiDraftIntoEditor() {
-        val state = AiLyricsJobManager.currentState()
+        val state = OnDeviceAiLyricsManager.currentState()
         val rawLrc = state.rawLrc
         if (state.phase != AiJobPhase.COMPLETED ||
             state.songId != currentSong?.id ||
@@ -657,14 +689,6 @@ class LyricsActivity : AppCompatActivity(),
         aiDraftPending = true
         tabs.getTabAt(TAB_EDIT)?.select()
         Toast.makeText(this, R.string.ai_draft_loaded_in_editor, Toast.LENGTH_LONG).show()
-    }
-
-    private fun validatedAiEndpoint(rawValue: String): String? = try {
-        val url = URL(rawValue.trim().trimEnd('/'))
-        if (url.protocol != "https" || url.host.isBlank() || url.userInfo != null) null
-        else url.toString().trimEnd('/')
-    } catch (_: Exception) {
-        null
     }
 
     private fun searchOnline() {
@@ -1064,6 +1088,7 @@ class LyricsActivity : AppCompatActivity(),
             R.id.aiAudioOnlyModeButton,
             R.id.aiKnownLyricsModeButton,
             R.id.cancelAiLyricsButton,
+            R.id.deleteAiModelButton,
             R.id.importLrcButton,
             R.id.insertTimestampButton,
             R.id.restoreAutomaticLyricsButton,
@@ -1108,8 +1133,6 @@ class LyricsActivity : AppCompatActivity(),
         private const val SMALL_TIMING_STEP_MS = 500L
         private const val LARGE_TIMING_STEP_MS = 5_000L
         private const val MAX_LRC_CHARACTERS = 1_000_000
-        private const val AI_PREFERENCES = "ai_lyrics_settings"
-        private const val KEY_AI_SERVER = "server_endpoint"
         private const val STATE_TAB = "lyrics_selected_tab"
         private val TIMED_LINE_PREFIX = Regex("""^\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?]""")
         private val LRC_METADATA_LINE = Regex("""^\[[A-Za-z]{1,10}:.*]$""")

@@ -3,12 +3,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-val aiSyncBaseUrl = providers.gradleProperty("LYR_AI_BASE_URL")
-    .orElse(providers.environmentVariable("LYR_AI_BASE_URL"))
-    .getOrElse("")
-    .replace("\\", "\\\\")
-    .replace("\"", "\\\"")
-
 android {
     namespace = "com.ahad.lyricsoverlay"
     compileSdk = 34
@@ -17,13 +11,13 @@ android {
         applicationId = "com.ahad.lyricsoverlay"
         minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "2.2.0"
-        buildConfigField("String", "AI_SYNC_BASE_URL", "\"$aiSyncBaseUrl\"")
-    }
+        versionCode = 5
+        versionName = "2.3.0"
 
-    buildFeatures {
-        buildConfig = true
+        // The current native whisper.cpp runtime is built for modern 64-bit Android phones.
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -52,6 +46,10 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("androidx.media:media:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
+
+    // whisper.cpp runs fully on the phone. Only a multilingual model file is downloaded once.
+    implementation("dev.ffmpegkit-maintained:whisper-android:1.0.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     testImplementation("junit:junit:4.13.2")
 }

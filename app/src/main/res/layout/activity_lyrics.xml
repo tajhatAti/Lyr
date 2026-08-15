@@ -320,38 +320,33 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="12dp"
                     android:background="@drawable/bg_permission_banner"
-                    android:drawableStart="@drawable/ic_upload"
+                    android:drawableStart="@drawable/ic_ai_mic"
                     android:drawablePadding="10dp"
                     android:padding="14dp"
-                    android:text="@string/ai_upload_privacy"
+                    android:text="@string/ai_local_privacy"
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
 
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/aiServerInputLayout"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:hint="@string/ai_server_address"
-                    app:startIconDrawable="@drawable/ic_ai_mic">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/aiServerInput"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:imeOptions="actionDone"
-                        android:inputType="textUri"
-                        android:maxLines="1" />
-                </com.google.android.material.textfield.TextInputLayout>
-
                 <TextView
+                    android:id="@+id/aiModelStatus"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/ai_model_checking"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/deleteAiModelButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="end"
                     android:layout_marginTop="4dp"
-                    android:text="@string/ai_server_helper"
-                    android:textColor="@color/text_muted"
-                    android:textSize="11sp" />
+                    android:text="@string/ai_delete_model"
+                    android:textSize="11sp"
+                    android:visibility="gone"
+                    app:icon="@drawable/ic_restore" />
 
                 <com.google.android.material.button.MaterialButtonToggleGroup
                     android:id="@+id/aiModeToggle"
@@ -413,7 +408,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
                     android:text="@string/ai_start"
-                    app:icon="@drawable/ic_upload" />
+                    app:icon="@drawable/ic_ai_mic" />
 
                 <com.google.android.material.progressindicator.LinearProgressIndicator
                     android:id="@+id/aiLyricsProgress"
