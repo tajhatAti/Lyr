@@ -527,29 +527,12 @@ object OnDeviceAiLyricsManager {
     }
 
     /** Keeps Known lyrics mode exact while reusing already synchronized online cue timing. */
-    private fun alignKnownLyricsToTimedResult(request: JobRequest, rawLrc: String): String {
-        val lines = LrcParser.parse(rawLrc)
-        if (lines.isEmpty()) return rawLrc
-        val durationMs = request.song.durationMs.takeIf { it > 0L }
-            ?: lines.last().endTimestampMs
-            ?: (lines.last().timestampMs + DEFAULT_ONLINE_CUE_DURATION_MS)
-        val segments = lines.mapIndexed { index, line ->
-            val nextStart = lines.getOrNull(index + 1)?.timestampMs
-            val endMs = line.endTimestampMs
-                ?: nextStart
-                ?: (line.timestampMs + DEFAULT_ONLINE_CUE_DURATION_MS).coerceAtMost(durationMs)
-            OnDeviceLyricsProcessor.Segment(
-                startMs = line.timestampMs,
-                endMs = endMs.coerceAtLeast(line.timestampMs + MIN_ONLINE_CUE_DURATION_MS),
-                text = line.text
-            )
-        }
-        return OnDeviceLyricsProcessor.alignKnownLyricsLrc(
-            request.knownLyrics,
-            segments,
-            durationMs
+    private fun alignKnownLyricsToTimedResult(request: JobRequest, rawLrc: String): String =
+        OnDeviceLyricsProcessor.alignKnownLyricsToTimedLrc(
+            knownLyrics = request.knownLyrics,
+            timedLrc = rawLrc,
+            songDurationMs = request.song.durationMs
         )
-    }
 
     private fun processSong(
         context: Context,
@@ -1300,6 +1283,4 @@ object OnDeviceAiLyricsManager {
     private const val MODEL_STORAGE_RESERVE_BYTES = 64L * 1024L * 1024L
     private const val AUDIO_STORAGE_RESERVE_BYTES = 24L * 1024L * 1024L
     private const val UNKNOWN_AUDIO_TEMP_BYTES = 160L * 1024L * 1024L
-    private const val DEFAULT_ONLINE_CUE_DURATION_MS = 4_000L
-    private const val MIN_ONLINE_CUE_DURATION_MS = 600L
 }

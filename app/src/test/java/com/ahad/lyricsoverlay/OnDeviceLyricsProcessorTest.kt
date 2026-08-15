@@ -45,6 +45,45 @@ class OnDeviceLyricsProcessorTest {
     }
 
     @Test
+    fun metadataOnlineTimingNeverReplacesExactPastedPhrases() {
+        val pasted = "আমার EXACT কথা!\nদ্বিতীয় লাইন, অপরিবর্তিত।"
+        val raw = OnDeviceLyricsProcessor.alignKnownLyricsToTimedLrc(
+            knownLyrics = pasted,
+            timedLrc = """
+                [00:01.00]unrelated online words
+                [00:03.20]
+                [00:06.00]different provider text
+                [00:08.40]
+            """.trimIndent(),
+            songDurationMs = 10_000L
+        )
+
+        val lines = LrcParser.parse(raw)
+        assertEquals(listOf("আমার EXACT কথা!", "দ্বিতীয় লাইন, অপরিবর্তিত।"), lines.map(LrcLine::text))
+        assertTrue(lines.all { (it.endTimestampMs ?: 0L) > it.timestampMs })
+        assertEquals(-1, LrcParser.lineIndexAt(lines, 4_500L))
+    }
+
+    @Test
+    fun recognizedOnlineStartOnlyTimingKeepsPastedTextAndBoundsFinalCue() {
+        val raw = OnDeviceLyricsProcessor.alignKnownLyricsToTimedLrc(
+            knownLyrics = "প্রথম লাইন\nদ্বিতীয় লাইন\nশেষ লাইন ঠিক",
+            timedLrc = """
+                [00:02.00]প্রথম লাইন
+                [00:05.00]দ্বিতীয় লাইন
+                [00:09.00]শেষ লাইন
+            """.trimIndent(),
+            songDurationMs = 10_000L
+        )
+
+        val lines = LrcParser.parse(raw)
+        assertEquals(listOf("প্রথম লাইন", "দ্বিতীয় লাইন", "শেষ লাইন ঠিক"), lines.map(LrcLine::text))
+        assertEquals(10_000L, lines.last().endTimestampMs)
+        assertTrue(lines.last().timestampMs < lines.last().endTimestampMs!!)
+        assertEquals(-1, LrcParser.lineIndexAt(lines, 10_000L))
+    }
+
+    @Test
     fun musicMarkersAreDroppedAndImmediateOverlapDuplicatesAreMerged() {
         val cleaned = OnDeviceLyricsProcessor.cleanAndMergeSegments(
             segments = listOf(

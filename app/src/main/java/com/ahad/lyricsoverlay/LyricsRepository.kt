@@ -116,7 +116,7 @@ class LyricsRepository(private val context: Context) {
         recognizedPhrases: List<String>
     ): LyricsResult? {
         val recognizedText = recognizedPhrases.joinToString(" ")
-        val recognizedTokens = normalizedTokens(recognizedText)
+        val recognizedTokens = RecognizedLyricsMatcher.normalizedTokens(recognizedText)
         if (recognizedTokens.size < MIN_RECOGNIZED_QUERY_TOKENS) return null
 
         val queries = recognitionSearchQueries(recognizedPhrases)
@@ -139,7 +139,7 @@ class LyricsRepository(private val context: Context) {
 
         val best = candidates.values
             .map { candidate -> candidate to recognitionCandidateScore(song, candidate, recognizedTokens) }
-            .filter { (_, score) -> score >= MINIMUM_RECOGNITION_SCORE }
+            .filter { (_, score) -> RecognizedLyricsMatcher.isConfident(score) }
             .maxByOrNull { (_, score) -> score }
             ?.first
             ?: return null
@@ -398,39 +398,14 @@ class LyricsRepository(private val context: Context) {
         song: Song,
         candidate: OnlineLyricsCandidate,
         recognizedTokens: Set<String>
-    ): Double {
-        val candidateTokens = normalizedTokens(
-            candidate.plainLyrics.ifBlank {
-                LrcParser.parse(candidate.syncedLyrics).joinToString(" ") { it.text }
-            }
-        )
-        if (candidateTokens.isEmpty()) return 0.0
-        val sharedTokens = recognizedTokens.intersect(candidateTokens)
-        val overlap = sharedTokens.size.toDouble() / recognizedTokens.size.coerceAtMost(80)
-        val usefulMatches = sharedTokens.count { token -> token.length >= 3 }
-        if (usefulMatches < MIN_USEFUL_RECOGNIZED_MATCHES) return 0.0
-
-        val targetDuration = song.durationMs.coerceAtLeast(1L) / 1_000.0
-        val durationDifference = if (candidate.durationSeconds > 0.0) {
-            kotlin.math.abs(candidate.durationSeconds - targetDuration)
-        } else {
-            Double.MAX_VALUE
-        }
-        val allowedDifference = maxOf(
-            MAX_RECOGNIZED_DURATION_DIFFERENCE_SECONDS,
-            targetDuration * MAX_RECOGNIZED_DURATION_RATIO
-        )
-        if (durationDifference > allowedDifference) return 0.0
-        val durationScore = 1.0 - (durationDifference / allowedDifference).coerceIn(0.0, 1.0)
-        return overlap * RECOGNIZED_OVERLAP_WEIGHT + durationScore * RECOGNIZED_DURATION_WEIGHT
-    }
-
-    private fun normalizedTokens(value: String): Set<String> = normalizeForMatch(value)
-        .split(' ')
-        .asSequence()
-        .map(String::trim)
-        .filter { it.length >= MIN_RECOGNIZED_TOKEN_LENGTH }
-        .toSet()
+    ): Double = RecognizedLyricsMatcher.score(
+        songDurationMs = song.durationMs,
+        candidateDurationSeconds = candidate.durationSeconds,
+        candidateLyrics = candidate.plainLyrics.ifBlank {
+            LrcParser.parse(candidate.syncedLyrics).joinToString(" ") { it.text }
+        },
+        recognizedTokens = recognizedTokens
+    )
 
     private fun candidateScore(
         candidate: OnlineLyricsCandidate,
@@ -788,17 +763,10 @@ class LyricsRepository(private val context: Context) {
         private const val MAX_VISIBLE_RESULTS = 20
         private const val MINIMUM_AUTOMATIC_SCORE = 1_500L
         private const val MIN_RECOGNIZED_QUERY_TOKENS = 4
-        private const val MIN_RECOGNIZED_TOKEN_LENGTH = 2
-        private const val MIN_USEFUL_RECOGNIZED_MATCHES = 5
         private const val MIN_QUERY_WORDS = 2
         private const val MAX_QUERY_WORDS = 8
         private const val PREFERRED_QUERY_WORDS = 4
         private const val MIN_QUERY_CHARACTERS = 4
-        private const val MAX_RECOGNIZED_DURATION_DIFFERENCE_SECONDS = 12.0
-        private const val MAX_RECOGNIZED_DURATION_RATIO = 0.08
-        private const val RECOGNIZED_OVERLAP_WEIGHT = 0.8
-        private const val RECOGNIZED_DURATION_WEIGHT = 0.2
-        private const val MINIMUM_RECOGNITION_SCORE = 0.30
         private const val AUTO_FIT_MIN_DIFFERENCE_MS = 4_000L
         private const val MIN_AUTO_FIT_RATIO = 0.85
         private const val MAX_AUTO_FIT_RATIO = 1.20

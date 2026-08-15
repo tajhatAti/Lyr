@@ -28,6 +28,35 @@ object OnDeviceLyricsProcessor {
         return LrcParser.serialize(cues)
     }
 
+    /**
+     * Uses an online or sidecar LRC only as a timing reference. The returned cue text always comes
+     * from [knownLyrics], so an imperfect online transcription can never replace what was pasted.
+     */
+    fun alignKnownLyricsToTimedLrc(
+        knownLyrics: String,
+        timedLrc: String,
+        songDurationMs: Long
+    ): String {
+        val lines = LrcParser.parse(timedLrc)
+        if (lines.isEmpty()) return timedLrc
+        val effectiveDurationMs = songDurationMs.takeIf { it > 0L }
+            ?: lines.last().endTimestampMs
+            ?: (lines.last().timestampMs + DEFAULT_TIMING_REFERENCE_CUE_DURATION_MS)
+        val segments = lines.mapIndexed { index, line ->
+            val nextStart = lines.getOrNull(index + 1)?.timestampMs
+            val endMs = line.endTimestampMs
+                ?: nextStart
+                ?: (line.timestampMs + DEFAULT_TIMING_REFERENCE_CUE_DURATION_MS)
+                    .coerceAtMost(effectiveDurationMs)
+            Segment(
+                startMs = line.timestampMs,
+                endMs = endMs.coerceAtLeast(line.timestampMs + MIN_TIMING_REFERENCE_CUE_DURATION_MS),
+                text = line.text
+            )
+        }
+        return alignKnownLyricsLrc(knownLyrics, segments, effectiveDurationMs)
+    }
+
     fun alignKnownLyricsLrc(
         knownLyrics: String,
         segments: List<Segment>,
@@ -359,6 +388,8 @@ object OnDeviceLyricsProcessor {
     private const val MAX_KNOWN_PHRASES = 2_000
     private const val MIN_CUE_DURATION_MS = 350L
     private const val DEFAULT_CUE_DURATION_MS = 2_500L
+    private const val DEFAULT_TIMING_REFERENCE_CUE_DURATION_MS = 4_000L
+    private const val MIN_TIMING_REFERENCE_CUE_DURATION_MS = 600L
     private const val DUPLICATE_JOIN_GAP_MS = 1_200L
     private const val START_PADDING_MS = 80L
     private const val END_PADDING_MS = 140L
