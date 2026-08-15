@@ -27,7 +27,9 @@ data class LyricsResult(
     val rawLrc: String,
     val source: LyricsSource,
     val providerName: String? = null,
-    val providerRecordId: Long? = null
+    val providerRecordId: Long? = null,
+    val referenceDurationMs: Long? = null,
+    val timingAutoAdjusted: Boolean = false
 )
 
 data class OnlineLyricsCandidate(
@@ -81,13 +83,9 @@ class LyricsRepository(private val context: Context) {
     /** Ignores existing files, performs a fresh LRCLIB lookup, and updates the offline cache. */
     fun refreshFromOnline(song: Song): LyricsResult? {
         val candidate = fetchBestOnline(song) ?: return null
-        writeDownloadedLyrics(song, candidate.syncedLyrics)
-        return LyricsResult(
-            rawLrc = candidate.syncedLyrics,
-            source = LyricsSource.ONLINE_AUTO,
-            providerName = PROVIDER_NAME,
-            providerRecordId = candidate.id
-        )
+        val result = prepareOnlineResult(song, candidate, LyricsSource.ONLINE_AUTO)
+        writeDownloadedLyrics(song, result)
+        return result
     }
 
     /** Searches LRCLIB for a user-visible result picker. Only valid synchronized results remain. */
@@ -126,8 +124,13 @@ class LyricsRepository(private val context: Context) {
     }
 
     /** Saves an explicit online choice above the automatic cache, so the chosen version persists. */
-    fun saveOnlineSelection(song: Song, candidate: OnlineLyricsCandidate): Boolean =
-        saveUserLyrics(song, candidate.syncedLyrics, LyricsSource.ONLINE_SELECTED)
+    fun saveOnlineSelection(song: Song, candidate: OnlineLyricsCandidate): LyricsResult? {
+        val result = prepareOnlineResult(song, candidate, LyricsSource.ONLINE_SELECTED)
+        if (!saveUserLyrics(song, result.rawLrc, LyricsSource.ONLINE_SELECTED)) return null
+        userMetadataFile(song).delete()
+        writeResultMetadata(userMetadataFile(song), result)
+        return result
+    }
 
     fun saveUserLyrics(song: Song, rawLrc: String, source: LyricsSource): Boolean {
         if (source !in USER_SOURCES || LrcParser.parse(rawLrc).isEmpty()) return false
@@ -135,6 +138,7 @@ class LyricsRepository(private val context: Context) {
             userDirectory.mkdirs()
             userFile(song).writeText(rawLrc.trim(), Charsets.UTF_8)
             userSourceFile(song).writeText(source.name, Charsets.UTF_8)
+            if (source != LyricsSource.ONLINE_SELECTED) userMetadataFile(song).delete()
             true
         } catch (_: Exception) {
             false
@@ -144,7 +148,8 @@ class LyricsRepository(private val context: Context) {
     fun deleteUserLyrics(song: Song): Boolean = try {
         val lyricsDeleted = !userFile(song).exists() || userFile(song).delete()
         val sourceDeleted = !userSourceFile(song).exists() || userSourceFile(song).delete()
-        lyricsDeleted && sourceDeleted
+        val metadataDeleted = !userMetadataFile(song).exists() || userMetadataFile(song).delete()
+        lyricsDeleted && sourceDeleted && metadataDeleted
     } catch (_: Exception) {
         false
     }
@@ -206,6 +211,38 @@ class LyricsRepository(private val context: Context) {
         } else {
             LyricsPublishResult(false, publishResponse.failureMessage())
         }
+    }
+
+    private fun prepareOnlineResult(
+        song: Song,
+        candidate: OnlineLyricsCandidate,
+        source: LyricsSource
+    ): LyricsResult {
+        val referenceDurationMs = (candidate.durationSeconds * 1_000.0).toLong()
+            .takeIf { it > 0L }
+        val targetDurationMs = song.durationMs.takeIf { it > 0L }
+        val ratio = if (referenceDurationMs != null && targetDurationMs != null) {
+            targetDurationMs.toDouble() / referenceDurationMs.toDouble()
+        } else {
+            1.0
+        }
+        val shouldFit = referenceDurationMs != null &&
+            targetDurationMs != null &&
+            abs(targetDurationMs - referenceDurationMs) >= AUTO_FIT_MIN_DIFFERENCE_MS &&
+            ratio in MIN_AUTO_FIT_RATIO..MAX_AUTO_FIT_RATIO
+        val preparedLrc = if (shouldFit) {
+            LrcParser.fitToDuration(candidate.syncedLyrics, referenceDurationMs!!, targetDurationMs!!)
+        } else {
+            candidate.syncedLyrics.trim()
+        }
+        return LyricsResult(
+            rawLrc = preparedLrc,
+            source = source,
+            providerName = PROVIDER_NAME,
+            providerRecordId = candidate.id,
+            referenceDurationMs = referenceDurationMs,
+            timingAutoAdjusted = shouldFit
+        )
     }
 
     private fun fetchBestOnline(song: Song): OnlineLyricsCandidate? {
@@ -301,7 +338,7 @@ class LyricsRepository(private val context: Context) {
             resultTitle.contains(wantedTitle) || wantedTitle.contains(resultTitle) -> 3_500L
             else -> -8_000L
         }
-        var score = titleScore - (durationDifference / 100L)
+        var score = titleScore - (durationDifference / 10L)
         if (wantedArtist.isNotBlank()) {
             score += when {
                 resultArtist == wantedArtist -> 3_000L
@@ -339,13 +376,33 @@ class LyricsRepository(private val context: Context) {
         } catch (_: Exception) {
             null
         } ?: LyricsSource.USER_EDITED
-        return LyricsResult(text, source, PROVIDER_NAME.takeIf { source == LyricsSource.ONLINE_SELECTED })
+        val metadata = if (source == LyricsSource.ONLINE_SELECTED) {
+            readResultMetadata(userMetadataFile(song))
+        } else {
+            null
+        }
+        return LyricsResult(
+            rawLrc = text,
+            source = source,
+            providerName = PROVIDER_NAME.takeIf { source == LyricsSource.ONLINE_SELECTED },
+            providerRecordId = metadata?.providerRecordId,
+            referenceDurationMs = metadata?.referenceDurationMs,
+            timingAutoAdjusted = metadata?.timingAutoAdjusted == true
+        )
     }
 
-    private fun readDownloadedLyrics(song: Song): LyricsResult? =
-        readValidLrc(downloadedFile(song))?.let {
-            LyricsResult(it, LyricsSource.DOWNLOADED_CACHE, PROVIDER_NAME)
-        }
+    private fun readDownloadedLyrics(song: Song): LyricsResult? {
+        val text = readValidLrc(downloadedFile(song)) ?: return null
+        val metadata = readResultMetadata(downloadedMetadataFile(song))
+        return LyricsResult(
+            rawLrc = text,
+            source = LyricsSource.DOWNLOADED_CACHE,
+            providerName = PROVIDER_NAME,
+            providerRecordId = metadata?.providerRecordId,
+            referenceDurationMs = metadata?.referenceDurationMs,
+            timingAutoAdjusted = metadata?.timingAutoAdjusted == true
+        )
+    }
 
     private fun readValidLrc(file: File): String? = try {
         if (file.isFile) {
@@ -357,18 +414,53 @@ class LyricsRepository(private val context: Context) {
         null
     }
 
-    private fun writeDownloadedLyrics(song: Song, lyrics: String) {
+    private fun writeDownloadedLyrics(song: Song, result: LyricsResult) {
         try {
             downloadedDirectory.mkdirs()
-            downloadedFile(song).writeText(lyrics.trim(), Charsets.UTF_8)
+            downloadedFile(song).writeText(result.rawLrc.trim(), Charsets.UTF_8)
+            downloadedMetadataFile(song).delete()
+            writeResultMetadata(downloadedMetadataFile(song), result)
         } catch (_: Exception) {
             // Playback remains usable even when private storage is unexpectedly unavailable.
         }
     }
 
+    private fun writeResultMetadata(file: File, result: LyricsResult) {
+        try {
+            file.parentFile?.mkdirs()
+            file.writeText(
+                JSONObject().apply {
+                    result.providerRecordId?.let { put("recordId", it) }
+                    result.referenceDurationMs?.let { put("referenceDurationMs", it) }
+                    put("timingAutoAdjusted", result.timingAutoAdjusted)
+                }.toString(),
+                Charsets.UTF_8
+            )
+        } catch (_: Exception) {
+            // The timed LRC remains usable without optional provenance metadata.
+        }
+    }
+
+    private fun readResultMetadata(file: File): PersistedLyricsMetadata? = try {
+        if (file.isFile) {
+            val json = JSONObject(file.readText(Charsets.UTF_8))
+            PersistedLyricsMetadata(
+                providerRecordId = json.optLong("recordId", -1L).takeIf { it >= 0L },
+                referenceDurationMs = json.optLong("referenceDurationMs", 0L).takeIf { it > 0L },
+                timingAutoAdjusted = json.optBoolean("timingAutoAdjusted", false)
+            )
+        } else {
+            null
+        }
+    } catch (_: Exception) {
+        null
+    }
+
     private fun downloadedFile(song: Song): File = File(downloadedDirectory, "${songKey(song)}.lrc")
+    private fun downloadedMetadataFile(song: Song): File = File(downloadedDirectory, "${songKey(song)}.json")
     private fun userFile(song: Song): File = File(userDirectory, "${songKey(song)}.lrc")
     private fun userSourceFile(song: Song): File = File(userDirectory, "${songKey(song)}.source")
+    private fun userMetadataFile(song: Song): File = File(userDirectory, "${songKey(song)}.json")
 
     private fun songKey(song: Song): String {
         val identity = "${song.sourceTitle.lowercase()}|${song.artist.lowercase()}|${song.durationMs}"
@@ -534,6 +626,12 @@ class LyricsRepository(private val context: Context) {
 
     private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
 
+    private data class PersistedLyricsMetadata(
+        val providerRecordId: Long?,
+        val referenceDurationMs: Long?,
+        val timingAutoAdjusted: Boolean
+    )
+
     private data class NetworkResponse(
         val statusCode: Int = -1,
         val body: String = "",
@@ -572,6 +670,9 @@ class LyricsRepository(private val context: Context) {
         private const val MAX_AUTO_SEARCH_ATTEMPTS = 2
         private const val MAX_VISIBLE_RESULTS = 20
         private const val MINIMUM_AUTOMATIC_SCORE = 1_500L
+        private const val AUTO_FIT_MIN_DIFFERENCE_MS = 4_000L
+        private const val MIN_AUTO_FIT_RATIO = 0.85
+        private const val MAX_AUTO_FIT_RATIO = 1.20
         private const val PUBLISH_PROGRESS_INTERVAL = 250_000L
         private val USER_SOURCES = setOf(
             LyricsSource.USER_EDITED,

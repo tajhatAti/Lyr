@@ -352,10 +352,19 @@ class PlayerService : Service() {
 
     fun currentLyricsSnapshot(): LyricsResult? = resolvedLyrics
 
+    /** Forces a fresh online match instead of reusing a possibly mismatched old cache entry. */
     fun retryLyrics() {
         val song = currentSong() ?: return
         clearResolvedLyrics()
-        resolveLyrics(song)
+        updateLyricsLoadState(LyricsLoadState.SEARCHING)
+        val requestGeneration = ++lyricsGeneration
+        lyricsExecutor.execute {
+            val refreshed = lyricsRepository.refreshFromOnline(song)
+            mainHandler.post {
+                if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
+                applyLyricsResult(refreshed)
+            }
+        }
     }
 
     /** Saves pasted or edited LRC in private app storage and immediately refreshes every surface. */
@@ -379,6 +388,33 @@ class PlayerService : Service() {
         return true
     }
 
+    /**
+     * Applies a global correction immediately and persists it. Positive values display every line
+     * later; negative values display every line earlier.
+     */
+    fun shiftCurrentLyrics(deltaMs: Long): Boolean {
+        val song = currentSong() ?: return false
+        val previous = resolvedLyrics ?: return false
+        if (deltaMs == 0L) return false
+        val shiftedLrc = LrcParser.shiftTimestamps(previous.rawLrc, deltaMs)
+        if (shiftedLrc == previous.rawLrc || LrcParser.parse(shiftedLrc).isEmpty()) return false
+
+        val requestGeneration = ++lyricsGeneration
+        val shiftedResult = previous.copy(
+            rawLrc = shiftedLrc,
+            source = LyricsSource.USER_EDITED
+        )
+        applyLyricsResult(shiftedResult)
+        lyricsExecutor.execute {
+            val saved = lyricsRepository.saveUserLyrics(song, shiftedLrc, LyricsSource.USER_EDITED)
+            mainHandler.post {
+                if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
+                if (!saved) applyLyricsResult(previous)
+            }
+        }
+        return true
+    }
+
     /** Makes an explicitly selected online version authoritative and available offline. */
     fun useOnlineLyrics(candidate: OnlineLyricsCandidate): Boolean {
         val song = currentSong() ?: return false
@@ -386,18 +422,11 @@ class PlayerService : Service() {
         val requestGeneration = ++lyricsGeneration
         updateLyricsLoadState(LyricsLoadState.SEARCHING)
         lyricsExecutor.execute {
-            val saved = lyricsRepository.saveOnlineSelection(song, candidate)
+            val selectedResult = lyricsRepository.saveOnlineSelection(song, candidate)
             mainHandler.post {
                 if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
-                if (saved) {
-                    applyLyricsResult(
-                        LyricsResult(
-                            candidate.syncedLyrics,
-                            LyricsSource.ONLINE_SELECTED,
-                            "LRCLIB",
-                            candidate.id
-                        )
-                    )
+                if (selectedResult != null) {
+                    applyLyricsResult(selectedResult)
                 } else {
                     updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
                 }

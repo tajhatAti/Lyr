@@ -1,5 +1,7 @@
 package com.ahad.lyricsoverlay
 
+import java.util.Locale
+
 data class LrcLine(
     val timestampMs: Long,
     val text: String
@@ -60,6 +62,42 @@ object LrcParser {
         .map { timestampRegex.replace(it, "").trim() }
         .filter { it.isNotBlank() }
         .joinToString("\n")
+
+    /** Moves every parsed lyric line together. Positive values show lyrics later. */
+    fun shiftTimestamps(rawLrc: String, deltaMs: Long): String {
+        val lines = parse(rawLrc)
+        if (lines.isEmpty()) return rawLrc
+        return serialize(lines.map { line ->
+            line.copy(timestampMs = (line.timestampMs + deltaMs).coerceAtLeast(0L))
+        })
+    }
+
+    /**
+     * Stretches or compresses timestamps when the matched recording has a different duration.
+     * A duration ratio is safer than guessing from the final lyric line, which often ends well
+     * before the audio itself.
+     */
+    fun fitToDuration(rawLrc: String, sourceDurationMs: Long, targetDurationMs: Long): String {
+        if (sourceDurationMs <= 0L || targetDurationMs <= 0L) return rawLrc
+        val lines = parse(rawLrc)
+        if (lines.isEmpty()) return rawLrc
+        val ratio = targetDurationMs.toDouble() / sourceDurationMs.toDouble()
+        return serialize(lines.map { line ->
+            line.copy(timestampMs = (line.timestampMs * ratio).toLong().coerceAtLeast(0L))
+        })
+    }
+
+    fun serialize(lines: List<LrcLine>): String = lines
+        .sortedBy(LrcLine::timestampMs)
+        .joinToString("\n") { line -> "${formatTimestamp(line.timestampMs)}${line.text.trim()}" }
+
+    private fun formatTimestamp(timestampMs: Long): String {
+        val safe = timestampMs.coerceAtLeast(0L)
+        val minutes = safe / 60_000L
+        val seconds = (safe % 60_000L) / 1_000L
+        val centiseconds = (safe % 1_000L) / 10L
+        return String.format(Locale.US, "[%02d:%02d.%02d] ", minutes, seconds, centiseconds)
+    }
 
     fun lineIndexAt(lines: List<LrcLine>, positionMs: Long): Int {
         if (lines.isEmpty() || positionMs < lines.first().timestampMs) return -1

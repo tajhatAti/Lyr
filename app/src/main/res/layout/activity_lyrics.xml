@@ -91,21 +91,47 @@
                 android:paddingEnd="18dp"
                 android:paddingBottom="180dp" />
 
-            <TextView
-                android:id="@+id/lyricsSourceBadge"
+            <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/bg_queue_number"
-                android:paddingStart="14dp"
-                android:paddingTop="7dp"
-                android:paddingEnd="14dp"
-                android:paddingBottom="7dp"
-                android:text="@string/lyrics_loading"
-                android:textColor="@color/text_secondary"
-                android:textSize="11sp"
-                android:textStyle="bold" />
+                android:layout_marginStart="12dp"
+                android:layout_marginTop="10dp"
+                android:layout_marginEnd="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/lyricsSourceBadge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_queue_number"
+                    android:ellipsize="end"
+                    android:maxWidth="170dp"
+                    android:maxLines="1"
+                    android:paddingStart="12dp"
+                    android:paddingTop="7dp"
+                    android:paddingEnd="12dp"
+                    android:paddingBottom="7dp"
+                    android:text="@string/lyrics_loading"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/fixLyricsTimingButton"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="8dp"
+                    android:minHeight="0dp"
+                    android:text="@string/fix_lyrics_timing"
+                    android:textSize="11sp"
+                    android:visibility="gone"
+                    app:icon="@drawable/ic_timer"
+                    app:iconPadding="4dp"
+                    app:iconSize="16dp" />
+            </LinearLayout>
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/overlayStatusButton"

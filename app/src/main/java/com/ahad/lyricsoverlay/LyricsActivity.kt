@@ -46,6 +46,7 @@ class LyricsActivity : AppCompatActivity(),
     private lateinit var liveEmptyState: View
     private lateinit var liveEmptyTitle: TextView
     private lateinit var sourceBadge: TextView
+    private lateinit var fixTimingButton: MaterialButton
     private lateinit var overlayStatusButton: MaterialButton
     private lateinit var searchInput: TextInputEditText
     private lateinit var searchButton: MaterialButton
@@ -209,10 +210,12 @@ class LyricsActivity : AppCompatActivity(),
             liveRecyclerView.visibility = View.INVISIBLE
             liveEmptyState.visibility = View.VISIBLE
             sourceBadge.setText(R.string.no_timed_lyrics)
+            fixTimingButton.visibility = View.GONE
         } else {
             liveRecyclerView.visibility = View.VISIBLE
             liveEmptyState.visibility = View.GONE
-            sourceBadge.setText(sourceLabel(result?.source))
+            sourceBadge.setText(sourceLabel(result))
+            fixTimingButton.visibility = View.VISIBLE
             updateActiveLine(latestPositionMs, force = true)
         }
         if (!editorDirty && result != null) setEditorText(result.rawLrc)
@@ -252,6 +255,7 @@ class LyricsActivity : AppCompatActivity(),
         liveEmptyState = findViewById(R.id.liveLyricsEmptyState)
         liveEmptyTitle = findViewById(R.id.liveLyricsEmptyTitle)
         sourceBadge = findViewById(R.id.lyricsSourceBadge)
+        fixTimingButton = findViewById(R.id.fixLyricsTimingButton)
         overlayStatusButton = findViewById(R.id.overlayStatusButton)
         searchInput = findViewById(R.id.lyricsSearchInput)
         searchButton = findViewById(R.id.searchLyricsButton)
@@ -312,6 +316,7 @@ class LyricsActivity : AppCompatActivity(),
     private fun setupControls() {
         findViewById<View>(R.id.lyricsBackButton).setOnClickListener { closeLyrics() }
         timerButton.setOnClickListener { SleepTimerDialog.show(this, playerService) }
+        fixTimingButton.setOnClickListener { showTimingCorrectionDialog() }
         findViewById<View>(R.id.retryAutomaticLyricsButton).setOnClickListener {
             playerService?.retryLyrics()
         }
@@ -517,11 +522,43 @@ class LyricsActivity : AppCompatActivity(),
         val seconds = (totalCentiseconds % 6_000L) / 100L
         val centiseconds = totalCentiseconds % 100L
         val stamp = String.format(Locale.US, "[%02d:%02d.%02d] ", minutes, seconds, centiseconds)
-        val selection = editor.selectionStart.coerceAtLeast(0)
-        val current = editor.text ?: return
-        val needsNewline = selection > 0 && current.getOrNull(selection - 1) != '\n'
-        current.insert(selection, if (needsNewline) "\n$stamp" else stamp)
-        editor.setSelection((selection + stamp.length + if (needsNewline) 1 else 0).coerceAtMost(current.length))
+        val original = editor.text?.toString().orEmpty()
+        val lines = original.split('\n').toMutableList()
+        val selection = editor.selectionStart.coerceIn(0, original.length)
+        val cursorLine = original.substring(0, selection).count { it == '\n' }
+            .coerceIn(0, lines.lastIndex.coerceAtLeast(0))
+        fun isUntimedLyric(line: String): Boolean {
+            val value = line.trim()
+            return value.isNotEmpty() &&
+                !TIMED_LINE_PREFIX.containsMatchIn(value) &&
+                !LRC_METADATA_LINE.matches(value)
+        }
+
+        val searchOrder = (cursorLine until lines.size) + (0 until cursorLine)
+        val lineIndex = searchOrder.firstOrNull { isUntimedLyric(lines[it]) }
+        if (lineIndex == null) {
+            if (original.isBlank()) {
+                setEditorText(stamp)
+                editorDirty = true
+                editor.requestFocus()
+            } else {
+                Toast.makeText(this, R.string.all_lyrics_lines_timed, Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+
+        lines[lineIndex] = stamp + lines[lineIndex].trimStart()
+        val updated = lines.joinToString("\n")
+        editor.setText(updated)
+        val nextLineIndex = ((lineIndex + 1) until lines.size)
+            .firstOrNull { isUntimedLyric(lines[it]) }
+            ?: (0 until lineIndex).firstOrNull { isUntimedLyric(lines[it]) }
+        val nextSelection = if (nextLineIndex != null) {
+            lines.take(nextLineIndex).sumOf { it.length + 1 }
+        } else {
+            lines.take(lineIndex).sumOf { it.length + 1 } + lines[lineIndex].length
+        }
+        editor.setSelection(nextSelection.coerceIn(0, updated.length))
         editorDirty = true
         editor.requestFocus()
     }
@@ -621,14 +658,72 @@ class LyricsActivity : AppCompatActivity(),
         liveEmptyTitle.setText(titleRes)
     }
 
-    private fun sourceLabel(source: LyricsSource?): Int = when (source) {
-        LyricsSource.USER_EDITED -> R.string.lyrics_source_edited
-        LyricsSource.IMPORTED_FILE -> R.string.lyrics_source_imported
-        LyricsSource.ONLINE_SELECTED -> R.string.lyrics_source_selected
-        LyricsSource.DOWNLOADED_CACHE -> R.string.lyrics_source_cache
-        LyricsSource.LOCAL_SIDECAR -> R.string.lyrics_source_local
-        LyricsSource.ONLINE_AUTO -> R.string.lyrics_source_online
-        null -> R.string.no_timed_lyrics
+    private fun showTimingCorrectionDialog() {
+        val result = currentLyrics ?: return
+        val songDurationMs = latestDurationMs.takeIf { it > 0L }
+            ?: currentSong?.durationMs?.takeIf { it > 0L }
+            ?: 0L
+        val dialogView = layoutInflater.inflate(R.layout.dialog_lyrics_timing, null)
+        val durationStatus = dialogView.findViewById<TextView>(R.id.timingDurationStatus)
+        val adjustmentStatus = dialogView.findViewById<TextView>(R.id.timingAdjustmentStatus)
+        val referenceDurationMs = result.referenceDurationMs
+        durationStatus.text = if (referenceDurationMs != null && songDurationMs > 0L) {
+            getString(
+                if (result.timingAutoAdjusted) {
+                    R.string.timing_duration_comparison_adjusted
+                } else {
+                    R.string.timing_duration_comparison
+                },
+                MusicScannerUtil.formatDuration(referenceDurationMs),
+                MusicScannerUtil.formatDuration(songDurationMs)
+            )
+        } else {
+            getString(
+                R.string.timing_duration_unknown,
+                MusicScannerUtil.formatDuration(songDurationMs)
+            )
+        }
+
+        var cumulativeShiftMs = 0L
+        fun applyShift(deltaMs: Long) {
+            if (playerService?.shiftCurrentLyrics(deltaMs) == true) {
+                cumulativeShiftMs += deltaMs
+                adjustmentStatus.text = getString(
+                    R.string.timing_manual_adjustment,
+                    String.format(Locale.US, "%+.1f", cumulativeShiftMs / 1_000.0)
+                )
+            }
+        }
+        dialogView.findViewById<View>(R.id.moveLyricsEarlierButton).setOnClickListener {
+            applyShift(-SMALL_TIMING_STEP_MS)
+        }
+        dialogView.findViewById<View>(R.id.moveLyricsLaterButton).setOnClickListener {
+            applyShift(SMALL_TIMING_STEP_MS)
+        }
+        dialogView.findViewById<View>(R.id.moveLyricsEarlierLargeButton).setOnClickListener {
+            applyShift(-LARGE_TIMING_STEP_MS)
+        }
+        dialogView.findViewById<View>(R.id.moveLyricsLaterLargeButton).setOnClickListener {
+            applyShift(LARGE_TIMING_STEP_MS)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.fix_lyrics_timing_title)
+            .setView(dialogView)
+            .setNegativeButton(R.string.close, null)
+            .show()
+    }
+
+    private fun sourceLabel(result: LyricsResult?): Int {
+        if (result?.timingAutoAdjusted == true) return R.string.lyrics_source_online_adjusted
+        return when (result?.source) {
+            LyricsSource.USER_EDITED -> R.string.lyrics_source_edited
+            LyricsSource.IMPORTED_FILE -> R.string.lyrics_source_imported
+            LyricsSource.ONLINE_SELECTED -> R.string.lyrics_source_selected
+            LyricsSource.DOWNLOADED_CACHE -> R.string.lyrics_source_cache
+            LyricsSource.LOCAL_SIDECAR -> R.string.lyrics_source_local
+            LyricsSource.ONLINE_AUTO -> R.string.lyrics_source_online
+            null -> R.string.no_timed_lyrics
+        }
     }
 
     private fun knownArtistText(song: Song): String = song.artist.takeUnless {
@@ -714,7 +809,8 @@ class LyricsActivity : AppCompatActivity(),
             R.id.insertTimestampButton,
             R.id.restoreAutomaticLyricsButton,
             R.id.publishLyricsButton,
-            R.id.overlayStatusButton
+            R.id.overlayStatusButton,
+            R.id.fixLyricsTimingButton
         ).forEach { id ->
             findViewById<MaterialButton>(id).apply {
                 setTextColor(accent)
@@ -743,7 +839,11 @@ class LyricsActivity : AppCompatActivity(),
         private const val TAB_EDIT = 2
         private const val SEEK_MAX = 1_000
         private const val USER_SCROLL_PAUSE_MS = 5_000L
+        private const val SMALL_TIMING_STEP_MS = 500L
+        private const val LARGE_TIMING_STEP_MS = 5_000L
         private const val MAX_LRC_CHARACTERS = 1_000_000
         private const val STATE_TAB = "lyrics_selected_tab"
+        private val TIMED_LINE_PREFIX = Regex("""^\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?]""")
+        private val LRC_METADATA_LINE = Regex("""^\[[A-Za-z]{1,10}:.*]$""")
     }
 }
