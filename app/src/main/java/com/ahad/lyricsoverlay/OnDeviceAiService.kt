@@ -8,8 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
-import androidx.core.app.ContextCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 
 /**
  * Keeps a user-started local lyrics job eligible to continue when its Activity closes. If Android
