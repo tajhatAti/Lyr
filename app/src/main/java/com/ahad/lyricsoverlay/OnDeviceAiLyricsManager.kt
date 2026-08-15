@@ -540,7 +540,7 @@ object OnDeviceAiLyricsManager {
                 connectTimeout = DOWNLOAD_CONNECT_TIMEOUT_MS
                 readTimeout = DOWNLOAD_READ_TIMEOUT_MS
                 useCaches = false
-                setRequestProperty("User-Agent", "Lyr/${BuildConfig.VERSION_NAME} Android")
+                setRequestProperty("User-Agent", "Lyr Android on-device model downloader")
                 if (existing > 0L) setRequestProperty("Range", "bytes=$existing-")
             }
             activeConnection = connection
