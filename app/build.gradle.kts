@@ -52,6 +52,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     testImplementation("junit:junit:4.13.2")
+    // Android's org.json classes are stubs in local JVM tests; use the real implementation there.
+    testImplementation("org.json:json:20240303")
 }
 
 // The user-facing GitHub build command also executes JVM regression tests.
