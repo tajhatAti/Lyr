@@ -74,8 +74,9 @@ class LyricsRepository(private val context: Context) {
     /** Normal playback lookup. User choices are never silently replaced by an online result. */
     fun findLyrics(song: Song): LyricsResult? {
         readUserLyrics(song)?.let { return it }
-        readDownloadedLyrics(song)?.let { return it }
-        findLocalSidecar(song)?.let {
+        readDownloadedLyrics(song)?.takeIf { isAutomaticScriptCompatible(song, it.rawLrc) }
+            ?.let { return it }
+        findLocalSidecar(song)?.takeIf { isAutomaticScriptCompatible(song, it) }?.let {
             return LyricsResult(it, LyricsSource.LOCAL_SIDECAR)
         }
         return refreshFromOnline(song)
@@ -88,14 +89,15 @@ class LyricsRepository(private val context: Context) {
      */
     fun findSmartInitialLyrics(song: Song): LyricsResult? {
         readUserLyrics(song)?.let { return it }
-        readDownloadedLyrics(song)?.let { return it }
+        readDownloadedLyrics(song)?.takeIf { isAutomaticScriptCompatible(song, it.rawLrc) }
+            ?.let { return it }
         return refreshFromOnline(song)
     }
 
     /** Same-name local LRC fallback used only after metadata and recognized-phrase lookup fail. */
-    fun findLocalFallback(song: Song): LyricsResult? = findLocalSidecar(song)?.let { rawLrc ->
-        LyricsResult(rawLrc, LyricsSource.LOCAL_SIDECAR)
-    }
+    fun findLocalFallback(song: Song): LyricsResult? = findLocalSidecar(song)
+        ?.takeIf { isAutomaticScriptCompatible(song, it) }
+        ?.let { rawLrc -> LyricsResult(rawLrc, LyricsSource.LOCAL_SIDECAR) }
 
     /** Ignores existing files, performs a fresh LRCLIB lookup, and updates the offline cache. */
     fun refreshFromOnline(song: Song): LyricsResult? {
@@ -128,9 +130,9 @@ class LyricsRepository(private val context: Context) {
             try {
                 val json = JSONArray(response.body)
                 for (index in 0 until json.length()) {
-                    json.optJSONObject(index)?.toCandidate()?.let { candidate ->
-                        candidates[candidate.id] = candidate
-                    }
+                    json.optJSONObject(index)?.toCandidate()
+                        ?.takeIf { candidate -> isAutomaticScriptCompatible(song, candidate) }
+                        ?.let { candidate -> candidates[candidate.id] = candidate }
                 }
             } catch (_: Exception) {
                 // A malformed response from one hint must not block local lyric generation.
@@ -169,9 +171,9 @@ class LyricsRepository(private val context: Context) {
             val json = JSONArray(response.body)
             val uniqueResults = LinkedHashMap<Long, OnlineLyricsCandidate>()
             for (index in 0 until json.length()) {
-                json.optJSONObject(index)?.toCandidate()?.let { candidate ->
-                    uniqueResults[candidate.id] = candidate
-                }
+                json.optJSONObject(index)?.toCandidate()
+                    ?.takeIf { candidate -> isAutomaticScriptCompatible(song, candidate) }
+                    ?.let { candidate -> uniqueResults[candidate.id] = candidate }
             }
             LyricsSearchResponse(
                 uniqueResults.values
@@ -185,6 +187,7 @@ class LyricsRepository(private val context: Context) {
 
     /** Saves an explicit online choice above the automatic cache, so the chosen version persists. */
     fun saveOnlineSelection(song: Song, candidate: OnlineLyricsCandidate): LyricsResult? {
+        if (!isAutomaticScriptCompatible(song, candidate)) return null
         val result = prepareOnlineResult(song, candidate, LyricsSource.ONLINE_SELECTED)
         if (!saveUserLyrics(song, result.rawLrc, LyricsSource.ONLINE_SELECTED)) return null
         userMetadataFile(song).delete()
@@ -318,7 +321,9 @@ class LyricsRepository(private val context: Context) {
             val exactResponse = executeRequest("https://lrclib.net/api/get?$parameters")
             if (exactResponse.successful) {
                 try {
-                    JSONObject(exactResponse.body).toCandidate()?.let { return it }
+                    JSONObject(exactResponse.body).toCandidate()
+                        ?.takeIf { candidate -> isAutomaticScriptCompatible(song, candidate) }
+                        ?.let { return it }
                 } catch (_: Exception) {
                     // Fall through to ranked search.
                 }
@@ -346,6 +351,7 @@ class LyricsRepository(private val context: Context) {
                 var bestScore = MINIMUM_AUTOMATIC_SCORE
                 for (index in 0 until results.length()) {
                     val candidate = results.optJSONObject(index)?.toCandidate() ?: continue
+                    if (!isAutomaticScriptCompatible(song, candidate)) continue
                     val score = candidateScore(candidate, song, cleanedTitle, artist)
                     if (score > bestScore) {
                         best = candidate
@@ -359,6 +365,21 @@ class LyricsRepository(private val context: Context) {
         }
         return null
     }
+
+    private fun isAutomaticScriptCompatible(song: Song, candidate: OnlineLyricsCandidate): Boolean =
+        isAutomaticScriptCompatible(
+            song,
+            candidate.plainLyrics.ifBlank {
+                LrcParser.parse(candidate.syncedLyrics).joinToString(" ") { line -> line.text }
+            }
+        )
+
+    private fun isAutomaticScriptCompatible(song: Song, lyrics: String): Boolean =
+        NativeLyricsScript.isAutomaticResultCompatible(
+            sourceTitle = song.sourceTitle,
+            artist = song.artist,
+            lyrics = lyrics
+        )
 
     private fun JSONObject.toCandidate(): OnlineLyricsCandidate? {
         val synced = optString("syncedLyrics")
@@ -377,12 +398,22 @@ class LyricsRepository(private val context: Context) {
     }
 
     private fun recognitionSearchQueries(phrases: List<String>): List<String> {
-        val normalized = phrases.map { phrase ->
-            phrase.trim().replace(Regex("\\s+"), " ")
-        }.filter { phrase ->
-            val count = phrase.split(' ').count { it.isNotBlank() }
-            count in MIN_QUERY_WORDS..MAX_QUERY_WORDS && phrase.length >= MIN_QUERY_CHARACTERS
-        }
+        val phraseCandidates = phrases + phrases.joinToString(" ")
+        val normalized = phraseCandidates.flatMap { phrase ->
+            val words = phrase.trim().replace(Regex("\\s+"), " ")
+                .split(' ')
+                .filter(String::isNotBlank)
+            when {
+                words.size in MIN_QUERY_WORDS..MAX_QUERY_WORDS -> listOf(words.joinToString(" "))
+                words.size > MAX_QUERY_WORDS -> {
+                    val lastStart = (words.size - PREFERRED_QUERY_WORDS).coerceAtLeast(0)
+                    linkedSetOf(0, lastStart / 2, lastStart).map { start ->
+                        words.drop(start).take(PREFERRED_QUERY_WORDS).joinToString(" ")
+                    }
+                }
+                else -> emptyList()
+            }
+        }.filter { phrase -> phrase.length >= MIN_QUERY_CHARACTERS }
         if (normalized.isEmpty()) return emptyList()
 
         val frequencies = normalized.groupingBy { normalizeForMatch(it) }.eachCount()

@@ -11,8 +11,8 @@ android {
         applicationId = "com.ahad.lyricsoverlay"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "2.3.0"
+        versionCode = 6
+        versionName = "2.4.0"
 
         // The current native whisper.cpp runtime is built for modern 64-bit Android phones.
         ndk {

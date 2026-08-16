@@ -540,6 +540,10 @@ class LyricsActivity : AppCompatActivity(),
             Toast.makeText(this, R.string.no_song_for_lyrics, Toast.LENGTH_SHORT).show()
             return
         }
+        if (!OnDeviceAiLyricsManager.isDurationEligible(song.durationMs)) {
+            Toast.makeText(this, R.string.ai_duration_too_long, Toast.LENGTH_LONG).show()
+            return
+        }
         if (OnDeviceAiLyricsManager.currentState().isRunning) {
             Toast.makeText(this, R.string.ai_job_already_running, Toast.LENGTH_LONG).show()
             return
@@ -578,7 +582,7 @@ class LyricsActivity : AppCompatActivity(),
                     song = song,
                     mode = mode,
                     knownLyrics = knownLyrics,
-                    prioritizeBengali = aiBengaliCheckBox.isChecked
+                    forceBengaliScript = aiBengaliCheckBox.isChecked
                 )
                 if (!started) {
                     Toast.makeText(this, R.string.ai_job_already_running, Toast.LENGTH_LONG).show()
@@ -605,7 +609,7 @@ class LyricsActivity : AppCompatActivity(),
             )
         }
         val running = OnDeviceAiLyricsManager.currentState().isRunning
-        deleteAiModelButton.visibility = if (model.downloaded && !running) View.VISIBLE else View.GONE
+        deleteAiModelButton.visibility = if ((model.downloaded || model.obsoleteModelDownloaded) && !running) View.VISIBLE else View.GONE
         deleteAiModelButton.isEnabled = !running
         startAiButton.isEnabled = !running
     }
@@ -619,7 +623,7 @@ class LyricsActivity : AppCompatActivity(),
         aiBengaliCheckBox.isEnabled = controlsEnabled
         startAiButton.isEnabled = controlsEnabled
         deleteAiModelButton.isEnabled = controlsEnabled
-        deleteAiModelButton.visibility = if (model.downloaded && controlsEnabled) View.VISIBLE else View.GONE
+        deleteAiModelButton.visibility = if ((model.downloaded || model.obsoleteModelDownloaded) && controlsEnabled) View.VISIBLE else View.GONE
         findViewById<MaterialButton>(R.id.aiAudioOnlyModeButton).isEnabled = controlsEnabled
         findViewById<MaterialButton>(R.id.aiKnownLyricsModeButton).isEnabled = controlsEnabled
         cancelAiButton.visibility = if (state.isRunning) View.VISIBLE else View.GONE
@@ -727,7 +731,8 @@ class LyricsActivity : AppCompatActivity(),
         }
         val initialOnlineCompletion = state.phase == AiJobPhase.COMPLETED &&
             (state.resultSource == AiLyricsResultSource.ONLINE &&
-                state.message?.contains("after local listening", ignoreCase = true) != true ||
+                state.message?.contains("after local listening", ignoreCase = true) != true &&
+                state.message?.contains("local sample", ignoreCase = true) != true ||
                 state.message?.contains("downloaded timing", ignoreCase = true) == true ||
                 state.message?.contains("after the online search", ignoreCase = true) == true)
         val accent = customization.accentColor

@@ -74,6 +74,7 @@ data class OnDeviceModelStatus(
     val displayName: String,
     val downloadBytes: Long,
     val downloaded: Boolean,
+    val obsoleteModelDownloaded: Boolean,
     val totalRamBytes: Long,
     val supported: Boolean
 ) {
@@ -112,13 +113,15 @@ object OnDeviceAiLyricsManager {
     )
 
     private data class RecognitionCheckpoint(
-        val nextChunkIndex: Int,
-        val segments: List<OnDeviceLyricsProcessor.Segment>
+        val completedChunkIndices: Set<Int>,
+        val segments: List<OnDeviceLyricsProcessor.Segment>,
+        val fastSearchAttempted: Boolean
     )
 
     private data class LocalProcessingResult(
         val rawLrc: String,
-        val recognizedPhrases: List<String>
+        val recognizedPhrases: List<String>,
+        val earlyOnlineMatch: LyricsResult? = null
     )
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -140,6 +143,10 @@ object OnDeviceAiLyricsManager {
 
     fun currentState(): AiLyricsJobState = state
 
+    /** Unknown MediaStore durations are verified again after decoding; known long-form audio is refused. */
+    fun isDurationEligible(durationMs: Long): Boolean =
+        SmartLyricsPolicy.isDurationEligible(durationMs)
+
     fun addListener(listener: Listener) {
         listeners += listener
         mainHandler.post { listener.onAiLyricsJobChanged(state) }
@@ -156,6 +163,7 @@ object OnDeviceAiLyricsManager {
             displayName = spec.displayName,
             downloadBytes = spec.bytes,
             downloaded = file.isFile && file.length() == spec.bytes,
+            obsoleteModelDownloaded = modelFile(context, LEGACY_SMALL_MODEL).exists(),
             totalRamBytes = totalRam(context),
             supported = supportsNativeRuntime()
         )
@@ -166,9 +174,9 @@ object OnDeviceAiLyricsManager {
         song: Song,
         mode: AiLyricsMode,
         knownLyrics: String,
-        prioritizeBengali: Boolean
+        forceBengaliScript: Boolean = false
     ): Boolean {
-        if (state.isRunning) return false
+        if (state.isRunning || !isDurationEligible(song.durationMs)) return false
         if (mode == AiLyricsMode.ALIGN_KNOWN_LYRICS && knownLyrics.isBlank()) return false
 
         val appContext = context.applicationContext
@@ -179,7 +187,15 @@ object OnDeviceAiLyricsManager {
             song = song,
             mode = mode,
             knownLyrics = knownLyrics,
-            language = if (prioritizeBengali) "bn" else "auto"
+            language = if (forceBengaliScript) {
+                NativeLyricsScript.BENGALI_LANGUAGE_CODE
+            } else {
+                NativeLyricsScript.whisperLanguage(
+                    sourceTitle = song.sourceTitle,
+                    artist = song.artist,
+                    knownLyrics = knownLyrics
+                )
+            }
         )
         currentRequest = request
         persistRequest(appContext, request)
@@ -266,7 +282,7 @@ object OnDeviceAiLyricsManager {
     fun deleteDownloadedModels(context: Context): Boolean {
         if (state.isRunning) return false
         var deletedAny = false
-        listOf(BASE_MODEL, SMALL_MODEL).forEach { spec ->
+        listOf(FAST_MODEL, LEGACY_SMALL_MODEL).forEach { spec ->
             val file = modelFile(context.applicationContext, spec)
             val partial = File(file.parentFile, "${spec.fileName}.part")
             val verified = verifiedModelMarker(file)
@@ -284,6 +300,14 @@ object OnDeviceAiLyricsManager {
         resume: Boolean
     ) {
         val song = request.song
+        if (!isDurationEligible(song.durationMs)) {
+            fail(
+                song,
+                token,
+                "Smart Lyrics only processes songs up to 8 minutes. This longer audio may be a story or other long-form recording."
+            )
+            return
+        }
         val workDir = jobWorkDirectory(context)
         if (!resume) workDir.deleteRecursively()
         workDir.mkdirs()
@@ -303,7 +327,7 @@ object OnDeviceAiLyricsManager {
                 )
                 val existing = LyricsRepository(context).findSmartInitialLyrics(song)
                 ensureCurrent(token)
-                if (existing != null) {
+                if (existing != null && isResultScriptCompatible(request.language, existing.rawLrc)) {
                     val alignPastedLyrics = request.mode == AiLyricsMode.ALIGN_KNOWN_LYRICS &&
                         existing.source in ONLINE_TIMING_SOURCES
                     val completedLrc = if (alignPastedLyrics) {
@@ -344,7 +368,7 @@ object OnDeviceAiLyricsManager {
         if (!supportsNativeRuntime()) {
             val localFallback = LyricsRepository(context).findLocalFallback(song)
             ensureCurrent(token)
-            if (localFallback != null) {
+            if (localFallback != null && isResultScriptCompatible(request.language, localFallback.rawLrc)) {
                 val alignPastedLyrics = request.mode == AiLyricsMode.ALIGN_KNOWN_LYRICS
                 complete(
                     request,
@@ -372,8 +396,7 @@ object OnDeviceAiLyricsManager {
             return
         }
 
-        val recommended = recommendedModel(context)
-        val attempts = if (recommended == SMALL_MODEL) listOf(SMALL_MODEL, BASE_MODEL) else listOf(BASE_MODEL)
+        val attempts = listOf(FAST_MODEL)
         var lastMemoryFailure: OutOfMemoryError? = null
         for ((attemptIndex, spec) in attempts.withIndex()) {
             try {
@@ -394,6 +417,30 @@ object OnDeviceAiLyricsManager {
                     token = token
                 )
                 ensureCurrent(token)
+                localResult.earlyOnlineMatch?.let { earlyMatch ->
+                    val alignPastedLyrics = request.mode == AiLyricsMode.ALIGN_KNOWN_LYRICS
+                    complete(
+                        request,
+                        token,
+                        if (alignPastedLyrics) {
+                            alignKnownLyricsToTimedResult(request, earlyMatch.rawLrc)
+                        } else {
+                            earlyMatch.rawLrc
+                        },
+                        if (alignPastedLyrics) {
+                            AiLyricsResultSource.ALIGNED_ON_DEVICE
+                        } else {
+                            AiLyricsResultSource.ONLINE
+                        },
+                        if (alignPastedLyrics) {
+                            "Found online timing after a fast local sample and aligned your pasted lyrics."
+                        } else {
+                            "Found synchronized lyrics after a few fast local samples."
+                        }
+                    )
+                    jobWorkDirectory(context).deleteRecursively()
+                    return
+                }
                 if (LrcParser.parse(localResult.rawLrc).isEmpty()) {
                     throw LocalAiException(
                         "The local model did not find usable sung words. Try Known lyrics mode or another recording."
@@ -413,7 +460,7 @@ object OnDeviceAiLyricsManager {
                     LyricsRepository(context).findOnlineFromRecognizedPhrases(
                         song,
                         localResult.recognizedPhrases
-                    )
+                    )?.takeIf { match -> isResultScriptCompatible(request.language, match.rawLrc) }
                 } catch (_: Throwable) {
                     null
                 }
@@ -445,7 +492,7 @@ object OnDeviceAiLyricsManager {
 
                 val localFallback = LyricsRepository(context).findLocalFallback(song)
                 ensureCurrent(token)
-                if (localFallback != null) {
+                if (localFallback != null && isResultScriptCompatible(request.language, localFallback.rawLrc)) {
                     val alignPastedLyrics = request.mode == AiLyricsMode.ALIGN_KNOWN_LYRICS
                     complete(
                         request,
@@ -486,30 +533,11 @@ object OnDeviceAiLyricsManager {
             } catch (_: LocalAiCanceledException) {
                 return
             } catch (storageError: ModelStorageException) {
-                if (spec == SMALL_MODEL && attemptIndex < attempts.lastIndex) {
-                    updateIfCurrent(
-                        token,
-                        state.copy(
-                            phase = AiJobPhase.DOWNLOADING_MODEL,
-                            progress = 0,
-                            message = "Storage is tight, so Lyr selected the smaller model automatically."
-                        )
-                    )
-                    continue
-                }
                 if (generation.get() == token) fail(song, token, storageError.userFacingMessage())
                 return
             } catch (memoryError: OutOfMemoryError) {
                 lastMemoryFailure = memoryError
-                if (spec == BASE_MODEL || attemptIndex == attempts.lastIndex) break
-                updateIfCurrent(
-                    token,
-                    state.copy(
-                        phase = AiJobPhase.DOWNLOADING_MODEL,
-                        progress = 0,
-                        message = "Memory was tight, so Lyr switched automatically to the compact model."
-                    )
-                )
+                break
             } catch (error: Throwable) {
                 if (error is ThreadDeath) throw error
                 if (generation.get() == token) fail(song, token, error.userFacingMessage())
@@ -525,6 +553,10 @@ object OnDeviceAiLyricsManager {
             )
         }
     }
+
+    private fun isResultScriptCompatible(language: String, rawLrc: String): Boolean =
+        language != NativeLyricsScript.BENGALI_LANGUAGE_CODE ||
+            NativeLyricsScript.hasMeaningfulBengali(LrcParser.toPlainLyrics(rawLrc))
 
     /** Keeps Known lyrics mode exact while reusing already synchronized online cue timing. */
     private fun alignKnownLyricsToTimedResult(request: JobRequest, rawLrc: String): String =
@@ -581,20 +613,73 @@ object OnDeviceAiLyricsManager {
                 ).also { persistDecodedCheckpoint(workDir, it) }
             }
             ensureCurrent(token)
+            if (!isDurationEligible(decoded.durationMs)) {
+                workDir.deleteRecursively()
+                throw LocalAiException(
+                    "Smart Lyrics stopped because this audio is longer than 8 minutes and may be a story or other long-form recording."
+                )
+            }
 
             val chunkCount = WhisperWavChunks.count(decoded.sampleCount)
             if (chunkCount <= 0) throw LocalAiException("The decoded recording is empty.")
             var checkpoint = readRecognitionCheckpoint(workDir)
-                ?: RecognitionCheckpoint(0, emptyList())
-            if (checkpoint.nextChunkIndex !in 0..chunkCount) {
-                checkpoint = RecognitionCheckpoint(0, emptyList())
+                ?: RecognitionCheckpoint(emptySet(), emptyList(), fastSearchAttempted = false)
+            if (checkpoint.completedChunkIndices.any { it !in 0 until chunkCount }) {
+                checkpoint = RecognitionCheckpoint(emptySet(), emptyList(), fastSearchAttempted = false)
             }
+            val completedChunks = checkpoint.completedChunkIndices.toMutableSet()
             val recognized = checkpoint.segments.toMutableList()
             val chunkFile = File(workDir, "current-chunk.wav")
             val threads = inferenceThreads(context)
+            val fastSearchThreshold = minOf(FAST_IDENTIFICATION_CHUNKS, chunkCount)
+
+            fun tryEarlyOnlineSearch(): LyricsResult? {
+                if (checkpoint.fastSearchAttempted || completedChunks.size < fastSearchThreshold) return null
+                val partialSegments = OnDeviceLyricsProcessor.cleanAndMergeSegments(
+                    recognized,
+                    decoded.durationMs
+                )
+                val partialPhrases = partialSegments.map { it.text }
+                if (
+                    RecognizedLyricsMatcher.normalizedTokens(partialPhrases.joinToString(" ")).size <
+                    MIN_FAST_SEARCH_TOKENS
+                ) {
+                    return null
+                }
+                checkpoint = RecognitionCheckpoint(
+                    completedChunkIndices = completedChunks.toSet(),
+                    segments = recognized.toList(),
+                    fastSearchAttempted = true
+                )
+                persistRecognitionCheckpoint(workDir, checkpoint)
+                updateIfCurrent(
+                    token,
+                    state.copy(
+                        phase = AiJobPhase.SEARCHING_RECOGNIZED,
+                        progress = 62,
+                        message = "Fast retry: searching online after a few useful song samples…"
+                    )
+                )
+                return try {
+                    LyricsRepository(context).findOnlineFromRecognizedPhrases(
+                        song,
+                        partialPhrases
+                    )?.takeIf { match -> isResultScriptCompatible(language, match.rawLrc) }
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+
+            tryEarlyOnlineSearch()?.let { onlineMatch ->
+                return LocalProcessingResult(
+                    rawLrc = onlineMatch.rawLrc,
+                    recognizedPhrases = recognized.map { it.text },
+                    earlyOnlineMatch = onlineMatch
+                )
+            }
 
             var loadedModel: WhisperModel? = null
-            if (checkpoint.nextChunkIndex < chunkCount) {
+            if (completedChunks.size < chunkCount) {
                 updateIfCurrent(
                     token,
                     state.copy(
@@ -608,24 +693,29 @@ object OnDeviceAiLyricsManager {
                 ensureCurrent(token)
             }
 
-            for (chunkIndex in checkpoint.nextChunkIndex until chunkCount) {
+            val processingOrder = WhisperWavChunks.prioritizedIndices(chunkCount)
+            for (chunkIndex in processingOrder) {
+                if (chunkIndex in completedChunks) continue
                 ensureCurrent(token)
-                if (modelSpec == SMALL_MODEL && isSystemLowOnMemory(context)) {
-                    throw OutOfMemoryError("Android reported low memory before local inference.")
-                }
+                val completedBefore = completedChunks.size
                 val chunk = WhisperWavChunks.create(
                     sourceWav = decoded.wavFile,
                     outputFile = chunkFile,
                     totalSamples = decoded.sampleCount,
                     index = chunkIndex
                 )
-                val progressBefore = 51 + ((chunkIndex * 42f) / chunkCount).roundToInt()
+                val progressBefore = 51 + ((completedBefore * 42f) / chunkCount).roundToInt()
+                val fastSampling = completedBefore < fastSearchThreshold
                 updateIfCurrent(
                     token,
                     state.copy(
                         phase = AiJobPhase.PROCESSING,
                         progress = progressBefore.coerceIn(51, 93),
-                        message = "Listening locally · part ${chunkIndex + 1} of $chunkCount"
+                        message = if (fastSampling) {
+                            "Fast identification sample ${completedBefore + 1} of $fastSearchThreshold"
+                        } else {
+                            "Building local timing · part ${completedBefore + 1} of $chunkCount"
+                        }
                     )
                 )
                 val result = runBlocking {
@@ -655,19 +745,30 @@ object OnDeviceAiLyricsManager {
                         )
                     }
                 }
-                persistRecognitionCheckpoint(
-                    workDir,
-                    RecognitionCheckpoint(chunkIndex + 1, recognized.toList())
+                completedChunks += chunkIndex
+                checkpoint = RecognitionCheckpoint(
+                    completedChunkIndices = completedChunks.toSet(),
+                    segments = recognized.toList(),
+                    fastSearchAttempted = checkpoint.fastSearchAttempted
                 )
+                persistRecognitionCheckpoint(workDir, checkpoint)
                 chunkFile.delete()
                 updateIfCurrent(
                     token,
                     state.copy(
                         phase = AiJobPhase.PROCESSING,
-                        progress = 51 + (((chunkIndex + 1) * 42f) / chunkCount).roundToInt(),
-                        message = "Saved local part ${chunkIndex + 1} of $chunkCount"
+                        progress = 51 + ((completedChunks.size * 42f) / chunkCount).roundToInt(),
+                        message = "Saved local part ${completedChunks.size} of $chunkCount"
                     )
                 )
+
+                tryEarlyOnlineSearch()?.let { onlineMatch ->
+                    return LocalProcessingResult(
+                        rawLrc = onlineMatch.rawLrc,
+                        recognizedPhrases = recognized.map { it.text },
+                        earlyOnlineMatch = onlineMatch
+                    )
+                }
             }
 
             ensureCurrent(token)
@@ -699,6 +800,15 @@ object OnDeviceAiLyricsManager {
                     decoded.durationMs
                 )
             }
+            if (
+                mode == AiLyricsMode.AUDIO_ONLY &&
+                language == NativeLyricsScript.BENGALI_LANGUAGE_CODE &&
+                !NativeLyricsScript.hasMeaningfulBengali(LrcParser.toPlainLyrics(rawLrc))
+            ) {
+                throw LocalAiException(
+                    "The local model did not produce reliable Bengali-script lyrics, so Lyr refused to save romanized or wrong-script text."
+                )
+            }
             return LocalProcessingResult(
                 rawLrc = rawLrc,
                 recognizedPhrases = cleanSegments.map { it.text }
@@ -724,7 +834,7 @@ object OnDeviceAiLyricsManager {
         destination.parentFile?.mkdirs()
 
         // Private app files cannot be changed by another app. After the first complete SHA-256
-        // verification, a length/mtime marker avoids hashing 60–190 MB again on every song.
+        // verification, a length/mtime marker avoids hashing the 60 MB model again on every song.
         usableModelFile(context, spec)?.let { existingModel ->
             if (isPreviouslyVerified(existingModel, spec)) return existingModel
             updateIfCurrent(
@@ -907,34 +1017,18 @@ object OnDeviceAiLyricsManager {
     private fun modelFile(context: Context, spec: ModelSpec): File =
         File(File(context.filesDir, MODEL_DIRECTORY), spec.fileName)
 
-    private fun recommendedModel(context: Context): ModelSpec {
-        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        val total = totalRam(context)
-        return if (total >= SMALL_MODEL_RAM_THRESHOLD_BYTES &&
-            manager.largeMemoryClass >= SMALL_MODEL_MIN_MEMORY_CLASS_MB &&
-            !manager.isLowRamDevice
-        ) {
-            SMALL_MODEL
-        } else {
-            BASE_MODEL
-        }
-    }
+    private fun recommendedModel(@Suppress("UNUSED_PARAMETER") context: Context): ModelSpec = FAST_MODEL
 
     private fun totalRam(context: Context): Long {
         val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         return ActivityManager.MemoryInfo().also(manager::getMemoryInfo).totalMem
     }
 
-    private fun isSystemLowOnMemory(context: Context): Boolean {
-        val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        return ActivityManager.MemoryInfo().also(manager::getMemoryInfo).lowMemory
-    }
-
     private fun inferenceThreads(context: Context): Int {
         val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val maximum = when {
             manager.isLowRamDevice || manager.memoryClass < 256 -> 2
-            totalRam(context) >= SMALL_MODEL_RAM_THRESHOLD_BYTES -> 6
+            totalRam(context) >= HIGH_RAM_THRESHOLD_BYTES -> 6
             else -> 4
         }
         return Runtime.getRuntime().availableProcessors().coerceIn(1, maximum)
@@ -984,6 +1078,7 @@ object OnDeviceAiLyricsManager {
             put("mode", request.mode.name)
             put("knownLyrics", request.knownLyrics)
             put("language", request.language)
+            put("languagePolicyVersion", NATIVE_SCRIPT_POLICY_VERSION)
             put("song", JSONObject().apply {
                 put("id", song.id)
                 put("title", song.title)
@@ -1031,7 +1126,15 @@ object OnDeviceAiLyricsManager {
             ),
             mode = AiLyricsMode.valueOf(json.getString("mode")),
             knownLyrics = json.optString("knownLyrics"),
-            language = json.optString("language", "auto")
+            language = if (json.optInt("languagePolicyVersion", 0) >= NATIVE_SCRIPT_POLICY_VERSION) {
+                json.optString("language", NativeLyricsScript.AUTO_LANGUAGE_CODE)
+            } else {
+                NativeLyricsScript.whisperLanguage(
+                    sourceTitle = songJson.getString("sourceTitle"),
+                    artist = songJson.getString("artist"),
+                    knownLyrics = json.optString("knownLyrics")
+                )
+            }
         )
         } catch (_: Exception) {
             null
@@ -1119,8 +1222,15 @@ object OnDeviceAiLyricsManager {
         workDir: File,
         checkpoint: RecognitionCheckpoint
     ) {
+        var nextSequentialIndex = 0
+        while (nextSequentialIndex in checkpoint.completedChunkIndices) nextSequentialIndex++
         val json = JSONObject().apply {
-            put("nextChunkIndex", checkpoint.nextChunkIndex)
+            // Retained for safe migration from versions that processed only from start to finish.
+            put("nextChunkIndex", nextSequentialIndex)
+            put("completedChunks", JSONArray().apply {
+                checkpoint.completedChunkIndices.sorted().forEach { index -> put(index) }
+            })
+            put("fastSearchAttempted", checkpoint.fastSearchAttempted)
             put("segments", JSONArray().apply {
                 checkpoint.segments.forEach { segment ->
                     put(JSONObject().apply {
@@ -1149,7 +1259,19 @@ object OnDeviceAiLyricsManager {
                 text = item.getString("text")
             )
         }
-        RecognitionCheckpoint(json.getInt("nextChunkIndex"), segments)
+        val completedArray = json.optJSONArray("completedChunks")
+        val completedChunks = if (completedArray != null) {
+            buildSet {
+                for (index in 0 until completedArray.length()) add(completedArray.getInt(index))
+            }
+        } else {
+            (0 until json.optInt("nextChunkIndex", 0)).toSet()
+        }
+        RecognitionCheckpoint(
+            completedChunkIndices = completedChunks,
+            segments = segments,
+            fastSearchAttempted = json.optBoolean("fastSearchAttempted", false)
+        )
         } catch (_: Exception) {
             null
         }
@@ -1250,13 +1372,13 @@ object OnDeviceAiLyricsManager {
         LyricsSource.ONLINE_AUTO
     )
 
-    private val BASE_MODEL = ModelSpec(
+    private val FAST_MODEL = ModelSpec(
         fileName = "ggml-base-q5_1.bin",
-        displayName = "Compact multilingual model",
+        displayName = "Fast multilingual model",
         bytes = 59_707_625L,
         sha256 = "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898"
     )
-    private val SMALL_MODEL = ModelSpec(
+    private val LEGACY_SMALL_MODEL = ModelSpec(
         fileName = "ggml-small-q5_1.bin",
         displayName = "Balanced multilingual model",
         bytes = 190_085_487L,
@@ -1274,9 +1396,11 @@ object OnDeviceAiLyricsManager {
     private const val DECODED_AUDIO_FILE = "decoded-16k-mono.wav"
     private const val DECODED_AUDIO_STATE_FILE = "decoded-audio.json"
     private const val RECOGNITION_STATE_FILE = "recognized-chunks.json"
+    private const val FAST_IDENTIFICATION_CHUNKS = 2
+    private const val MIN_FAST_SEARCH_TOKENS = 5
+    private const val NATIVE_SCRIPT_POLICY_VERSION = 2
     private val PERSISTENCE_LOCK = Any()
-    private const val SMALL_MODEL_RAM_THRESHOLD_BYTES = 5_500L * 1024L * 1024L
-    private const val SMALL_MODEL_MIN_MEMORY_CLASS_MB = 384
+    private const val HIGH_RAM_THRESHOLD_BYTES = 5_500L * 1024L * 1024L
     private const val DOWNLOAD_CONNECT_TIMEOUT_MS = 30_000
     private const val DOWNLOAD_READ_TIMEOUT_MS = 90_000
     private const val DOWNLOAD_BUFFER_BYTES = 64 * 1024

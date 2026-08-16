@@ -21,10 +21,12 @@ Lyr is a native Android music player that scans music stored on the device, keep
 - Fully on-device AI modes:
   - **Audio only → Lyrics + Sync** transcribes the actual recording and builds editable phrase start/end times
   - **Known lyrics → Auto Sync** aligns pasted lines to locally recognized timing
-- Automatic RAM-aware multilingual Whisper model choice: compact `base-q5_1` on constrained phones and balanced `small-q5_1` on stronger phones
+- Speed-first multilingual `base-q5_1` model on every supported phone instead of selecting the much slower `small` model on high-RAM devices
 - One-time resumable model download with exact byte-count and SHA-256 verification; afterward local AI works offline
+- Native-script policy: Bengali metadata/lyrics select Bengali transcription with translation disabled, romanized automatic matches are rejected, and English/unknown metadata uses automatic language detection
 - Android `MediaExtractor`/`MediaCodec` decoding of MP3, M4A/AAC, WAV, and FLAC to 16 kHz mono PCM entirely on the phone
-- Overlapping short inference chunks for truthful progress and cancellation between chunks, with automatic compact-model fallback when memory is tight
+- Verse/chorus-oriented sample chunks trigger an early text-only LRCLIB retry; all remaining overlapping chunks run only when retrieval fails
+- Hard 8-minute Smart Lyrics limit before online/AI work, with decoded-duration verification for files whose stored duration is unavailable
 - Unsaved synchronized preview, playback verification, word/timestamp editing, and explicit private save before Live Lyrics or overlay use
 - Explicit cue ends: lyric text becomes blank in instrumental or vocal gaps instead of lingering until the next phrase
 - Manual Bengali/other-language fallback: paste one phrase per line and tap **Sync next line** at each vocal cue
@@ -68,9 +70,9 @@ Android may ask you to allow installation from the browser or file manager used 
 1. Open Lyr and allow music/audio access. On Android 13+, allow notifications for normal playback controls.
 2. Tap a song, then swipe upward on the artwork/lyrics card (or tap it) to open **Lyrics Center**.
 3. Try **Online** first when appropriate. LRCLIB results show recording metadata and duration; explicitly select the matching version.
-4. If no lyrics exist, open **AI Sync** and choose **Audio only**. Keep **Prioritize Bengali** enabled for a Bengali song.
-5. Lyr displays the model chosen from the phone's reported RAM. Tap **Start AI on this phone** and confirm. The first run downloads and verifies approximately 60 MB (compact) or 190 MB (balanced). An interrupted model download resumes on retry.
-6. Lyr decodes the selected song locally, transcribes consecutive overlapping chunks on the phone CPU, and displays real progress. The operation can take longer than the song and can warm the phone; a charger is recommended.
+4. If no lyrics exist, open **AI Sync** and choose **Audio only**. Language detection is automatic. If a Bengali song has an English/romanized title, enable **Song is Bengali — require বাংলা script**.
+5. Tap **Find or create synced lyrics** and confirm. The first local run downloads and verifies the approximately 60 MB speed-first model; an interrupted download resumes on retry.
+6. Lyr decodes locally, listens to likely useful verse/chorus sections first, and immediately retries LRCLIB using only recognized text. It transcribes the remaining overlapping chunks only when no reliable online match exists. Local fallback can still warm the phone.
 7. Preview the generated phrases during playback. Tap **Review & edit draft**, correct every word and any early/late start or end, then tap **Save and use on this device**. Nothing is saved or published before this step.
 8. For known words, choose **Known lyrics**, paste one sung phrase per line, and start local AI. Lyr uses recognition timing while preserving the pasted text.
 9. To recover storage, use **Delete downloaded model**. Lyr will automatically choose/download the suitable model again when needed.
@@ -81,9 +83,9 @@ The manual **Edit / Import** timing workflow remains available and requires no A
 
 ## On-device AI design
 
-- `OnDeviceAiLyricsManager` owns model selection, resumable download, SHA-256 verification, progress, cancellation, memory fallback, inference, and draft handoff.
+- `OnDeviceAiLyricsManager` owns the 8-minute preflight, speed-first model, resumable download, SHA-256 verification, early recognized-text retry, progress, cancellation, inference, and draft handoff.
 - `LocalAudioDecoder` uses Android's platform codecs and streams directly to a compact 16 kHz mono WAV; song audio is not sent to any network endpoint.
-- `WhisperWavChunks` creates one 30-second local chunk at a time with a 2-second overlap and assigns overlap boundaries without duplicated phrases.
+- `WhisperWavChunks` prioritizes two likely verse/chorus regions, then covers the full recording in 30-second local chunks with a 2-second overlap and unambiguous boundary ownership.
 - `dev.ffmpegkit-maintained:whisper-android:1.0.0` provides the embedded arm64 whisper.cpp runtime.
 - Official multilingual quantized models are fetched directly from the public `ggerganov/whisper.cpp` model repository and stored in app-private files.
 - `OnDeviceLyricsProcessor` cleans segments, splits editable phrases, aligns known text with fuzzy Unicode sequence alignment, and emits Lyr's explicit-end LRC representation.
@@ -105,4 +107,4 @@ Singing transcription is harder than ordinary speech. Model quality, phone speed
 
 ## Privacy and networking
 
-Normal LRCLIB lookup sends the current title, artist, and duration to the public LRCLIB service. AI Sync does **not** upload the song: only the public Whisper model file is downloaded on first use. Local model inference, audio decoding, transcription, timing, preview, and private save happen on the phone. AI drafts and local edits are never silently published to LRCLIB; public publication remains a separate confirmation that sends song metadata and lyrics, not audio. Cached and privately saved lyrics remain in app-private storage.
+Normal LRCLIB lookup sends the current title, artist, and duration to the public LRCLIB service. AI Sync does **not** upload the song: the public Whisper model is downloaded on first use, and an early retry may send a few locally recognized text phrases to LRCLIB. Local model inference, audio decoding, transcription, timing, preview, and private save happen on the phone. AI drafts and local edits are never silently published to LRCLIB; public publication remains a separate confirmation that sends song metadata and lyrics, not audio. Cached and privately saved lyrics remain in app-private storage.

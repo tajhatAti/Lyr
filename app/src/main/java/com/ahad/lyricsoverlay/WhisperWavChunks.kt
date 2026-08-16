@@ -32,6 +32,24 @@ object WhisperWavChunks {
         return (1L + (samplesAfterFirstChunk + STEP_SAMPLES - 1L) / STEP_SAMPLES).toInt()
     }
 
+    /**
+     * Samples likely verse/chorus regions first so a text-only internet retry can succeed before
+     * the whole song is transcribed. Every index still appears exactly once for the offline path.
+     */
+    fun prioritizedIndices(chunkCount: Int): List<Int> {
+        if (chunkCount <= 0) return emptyList()
+        if (chunkCount <= FAST_SAMPLE_COUNT) return (0 until chunkCount).toList()
+        val firstSample = (chunkCount / 3).coerceIn(1, chunkCount - 2)
+        val secondSample = ((chunkCount * 2) / 3).coerceIn(1, chunkCount - 2)
+        return buildList(chunkCount) {
+            add(firstSample)
+            if (secondSample != firstSample) add(secondSample)
+            for (index in 0 until chunkCount) {
+                if (index != firstSample && index != secondSample) add(index)
+            }
+        }
+    }
+
     fun create(sourceWav: File, outputFile: File, totalSamples: Long, index: Int): Chunk {
         val count = count(totalSamples)
         if (index !in 0 until count) throw IndexOutOfBoundsException("Invalid audio chunk index.")
@@ -102,6 +120,7 @@ object WhisperWavChunks {
     }
 
     private const val BYTES_PER_SAMPLE = 2
+    private const val FAST_SAMPLE_COUNT = 2
     private const val CHUNK_DURATION_SECONDS = 30
     private const val STEP_DURATION_SECONDS = 28
     private const val CHUNK_SAMPLES = CHUNK_DURATION_SECONDS * LocalAudioDecoder.WHISPER_SAMPLE_RATE

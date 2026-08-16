@@ -25,6 +25,18 @@ class WhisperWavChunksTest {
     }
 
     @Test
+    fun likelyVerseAndChorusChunksAreProcessedBeforeTheFullSong() {
+        assertEquals(emptyList<Int>(), WhisperWavChunks.prioritizedIndices(0))
+        assertEquals(listOf(0), WhisperWavChunks.prioritizedIndices(1))
+        assertEquals(listOf(0, 1), WhisperWavChunks.prioritizedIndices(2))
+        assertEquals(
+            listOf(3, 6, 0, 1, 2, 4, 5, 7, 8, 9),
+            WhisperWavChunks.prioritizedIndices(10)
+        )
+        assertEquals((0 until 10).toList(), WhisperWavChunks.prioritizedIndices(10).sorted())
+    }
+
+    @Test
     fun overlapMidpointHasExactlyOneOwner() {
         val first = WhisperWavChunks.Chunk(
             index = 0,

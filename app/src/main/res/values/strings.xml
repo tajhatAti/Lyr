@@ -197,18 +197,19 @@
     <!-- Fully on-device audio transcription and known-text alignment -->
     <string name="create_lyrics_with_ai">Create lyrics with AI</string>
     <string name="ai_sync_title">Smart Lyrics</string>
-    <string name="ai_sync_explanation">Searches first, listens locally only when needed, then creates timing only as the final fallback.</string>
+    <string name="ai_sync_explanation">Searches first, samples useful song sections for an early online retry, then creates full local timing only as the final fallback.</string>
     <string name="ai_local_privacy">Audio processing stays private on this phone. Only song details or a few recognized text phrases are searched online; audio is never uploaded.</string>
     <string name="ai_model_checking">Checking this phone’s RAM and local model…</string>
-    <string name="ai_model_selected">Automatic choice: %1$s · phone RAM %2$s GB · one-time download %3$d MB</string>
-    <string name="ai_model_ready">%1$s is ready · offline processing available · phone RAM %2$s GB</string>
+    <string name="ai_model_selected">Speed-first choice: %1$s · phone RAM %2$s GB · one-time download %3$d MB</string>
+    <string name="ai_model_ready">%1$s is ready · fast private fallback available · phone RAM %2$s GB</string>
     <string name="ai_model_unsupported">Online Smart Lyrics is available. The private local fallback additionally requires a 64-bit ARM phone.</string>
     <string name="ai_delete_model">Delete downloaded model</string>
     <string name="ai_model_deleted">Downloaded AI model removed. Lyr will choose and download one again when needed.</string>
     <string name="ai_mode_audio_only">Audio only</string>
     <string name="ai_mode_known_lyrics">Known lyrics</string>
     <string name="ai_known_lyrics_hint">Paste the exact lyrics, preferably one sung phrase per line</string>
-    <string name="ai_prioritize_bengali">Prioritize Bengali transcription</string>
+    <string name="ai_prioritize_bengali">Song is Bengali — require বাংলা script (use when its title is written in English)</string>
+    <string name="ai_duration_too_long">Smart Lyrics only accepts songs up to 8 minutes. This longer audio may be a story or other long-form recording.</string>
     <string name="ai_start">Find or create synced lyrics</string>
     <string name="ai_cancel">Stop local processing</string>
     <string name="ai_idle_status">Ready. No song audio leaves this phone.</string>
@@ -221,7 +222,7 @@
     <string name="ai_result_preview">Unsaved synchronized preview</string>
     <string name="ai_review_and_edit">Review &amp; edit draft</string>
     <string name="ai_local_confirmation_title">Start Smart Lyrics?</string>
-    <string name="ai_local_confirmation_message">Lyr searches synchronized lyrics first. Only if that fails, %1$s listens locally and may need a one-time verified %2$d MB download. It then searches again using recognized text before creating a local draft. Audio is never uploaded. Progress and completed chunks are saved, and a notification keeps eligible work running when you close this screen.</string>
+    <string name="ai_local_confirmation_message">Lyr searches synchronized lyrics first. If that fails, %1$s samples useful sections locally and retries online early, with a one-time verified %2$d MB download when needed. Only a failed retry continues through the whole song. Audio is never uploaded. Native Bengali script is enforced when detected or selected. Progress is saved. Audio over 8 minutes is refused.</string>
     <string name="ai_confirm_local">Start Smart Lyrics</string>
     <string name="ai_known_lyrics_required">Paste the lyrics to align first.</string>
     <string name="ai_job_already_running">An on-device AI job is already running. Stop it before starting another.</string>
@@ -239,7 +240,7 @@
     <string name="ai_step_retry">Retry online with recognized words</string>
     <string name="ai_step_finish">Use downloaded lyrics or build local sync</string>
     <string name="ai_searching_metadata_status">Searching for synchronized lyrics by title and artist…</string>
-    <string name="ai_searching_recognized_status">Local listening finished. Checking online again with recognized words…</string>
+    <string name="ai_searching_recognized_status">Checking online now with words heard on this phone…</string>
     <string name="ai_finalizing_status">No reliable online version was found. Finishing the local synchronized draft…</string>
     <string name="ai_online_completed_status">Synchronized online lyrics found, duration-corrected, and cached for offline reuse.</string>
     <string name="ai_local_file_completed_status">A synchronized same-folder LRC was found and loaded.</string>
