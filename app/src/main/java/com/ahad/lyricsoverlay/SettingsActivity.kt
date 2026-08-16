@@ -11,6 +11,8 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -20,6 +22,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.res.ResourcesCompat
 import com.google.android.material.card.MaterialCardView
 
 class SettingsActivity : AppCompatActivity(), AppPreferenceListener {
@@ -49,6 +52,26 @@ class SettingsActivity : AppCompatActivity(), AppPreferenceListener {
     private val accentViews = linkedMapOf<Int, View>()
     private val overlayColorViews = linkedMapOf<Int, View>()
     private val spinnerAdapters = mutableListOf<ThemedSpinnerAdapter>()
+    private val overlayFontValues = listOf(
+        AppPreferences.OVERLAY_FONT_BOLD,
+        AppPreferences.OVERLAY_FONT_REGULAR,
+        AppPreferences.OVERLAY_FONT_SERIF,
+        AppPreferences.OVERLAY_FONT_MONOSPACE,
+        AppPreferences.OVERLAY_FONT_HIND_SILIGURI,
+        AppPreferences.OVERLAY_FONT_HIND_SILIGURI_MEDIUM,
+        AppPreferences.OVERLAY_FONT_HIND_SILIGURI_BOLD,
+        AppPreferences.OVERLAY_FONT_ATMA,
+        AppPreferences.OVERLAY_FONT_ATMA_MEDIUM
+    )
+    private val overlayAnimationValues = listOf(
+        AppPreferences.OVERLAY_ANIMATION_FADE,
+        AppPreferences.OVERLAY_ANIMATION_SCALE,
+        AppPreferences.OVERLAY_ANIMATION_SLIDE,
+        AppPreferences.OVERLAY_ANIMATION_RISE,
+        AppPreferences.OVERLAY_ANIMATION_POP,
+        AppPreferences.OVERLAY_ANIMATION_FLIP,
+        AppPreferences.OVERLAY_ANIMATION_NONE
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -245,17 +268,21 @@ class SettingsActivity : AppCompatActivity(), AppPreferenceListener {
     }
 
     private fun setupOverlayFontStyle() {
-        val values = listOf(
-            AppPreferences.OVERLAY_FONT_BOLD,
-            AppPreferences.OVERLAY_FONT_REGULAR,
-            AppPreferences.OVERLAY_FONT_SERIF,
-            AppPreferences.OVERLAY_FONT_MONOSPACE
-        )
         setSpinner(
             fontStyleSpinner,
-            listOf("Bold Sans", "Regular Sans", "Serif", "Monospace"),
-            values.indexOf(AppPreferences.overlayFontStyle()).coerceAtLeast(0)
-        ) { position -> AppPreferences.setOverlayFontStyle(values[position]) }
+            listOf(
+                "Bold Sans",
+                "Regular Sans",
+                "Serif",
+                "Monospace",
+                "Hind Siliguri · বাংলা",
+                "Hind Siliguri Medium · বাংলা",
+                "Hind Siliguri Bold · বাংলা",
+                "Atma · বাংলা",
+                "Atma Medium · বাংলা"
+            ),
+            overlayFontValues.indexOf(AppPreferences.overlayFontStyle()).coerceAtLeast(0)
+        ) { position -> AppPreferences.setOverlayFontStyle(overlayFontValues[position]) }
     }
 
     private fun setupOverlayColorPalette() {
@@ -275,18 +302,13 @@ class SettingsActivity : AppCompatActivity(), AppPreferenceListener {
     }
 
     private fun setupOverlayAnimationStyle() {
-        val values = listOf(
-            AppPreferences.OVERLAY_ANIMATION_FADE,
-            AppPreferences.OVERLAY_ANIMATION_SCALE,
-            AppPreferences.OVERLAY_ANIMATION_SLIDE
-        )
         setSpinner(
             animationSpinner,
-            listOf("Fade", "Fade + scale", "Slide"),
-            values.indexOf(AppPreferences.overlayAnimation()).coerceAtLeast(0)
+            listOf("Soft fade", "Focus zoom", "Side glide", "Gentle rise", "Elastic pop", "3D flip", "Instant"),
+            overlayAnimationValues.indexOf(AppPreferences.overlayAnimation()).coerceAtLeast(0)
         ) { position ->
-            AppPreferences.setOverlayAnimation(values[position])
-            animateOverlayPreview(values[position])
+            AppPreferences.setOverlayAnimation(overlayAnimationValues[position])
+            animateOverlayPreview(overlayAnimationValues[position])
         }
     }
 
@@ -350,20 +372,11 @@ class SettingsActivity : AppCompatActivity(), AppPreferenceListener {
         }
         fontSizeValue.text = getString(R.string.font_size_value, size.toInt())
         fontStyleSpinner.setSelection(
-            listOf(
-                AppPreferences.OVERLAY_FONT_BOLD,
-                AppPreferences.OVERLAY_FONT_REGULAR,
-                AppPreferences.OVERLAY_FONT_SERIF,
-                AppPreferences.OVERLAY_FONT_MONOSPACE
-            ).indexOf(AppPreferences.overlayFontStyle()).coerceAtLeast(0),
+            overlayFontValues.indexOf(AppPreferences.overlayFontStyle()).coerceAtLeast(0),
             false
         )
         animationSpinner.setSelection(
-            listOf(
-                AppPreferences.OVERLAY_ANIMATION_FADE,
-                AppPreferences.OVERLAY_ANIMATION_SCALE,
-                AppPreferences.OVERLAY_ANIMATION_SLIDE
-            ).indexOf(AppPreferences.overlayAnimation()).coerceAtLeast(0),
+            overlayAnimationValues.indexOf(AppPreferences.overlayAnimation()).coerceAtLeast(0),
             false
         )
         selectedOverlayColor = AppPreferences.overlayTextColor()
@@ -420,36 +433,66 @@ class SettingsActivity : AppCompatActivity(), AppPreferenceListener {
             AppPreferences.OVERLAY_FONT_REGULAR -> Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
             AppPreferences.OVERLAY_FONT_SERIF -> Typeface.create(Typeface.SERIF, Typeface.BOLD)
             AppPreferences.OVERLAY_FONT_MONOSPACE -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            AppPreferences.OVERLAY_FONT_HIND_SILIGURI -> previewTypeface(R.font.hind_siliguri_regular)
+            AppPreferences.OVERLAY_FONT_HIND_SILIGURI_MEDIUM -> previewTypeface(R.font.hind_siliguri_medium)
+            AppPreferences.OVERLAY_FONT_HIND_SILIGURI_BOLD -> previewTypeface(R.font.hind_siliguri_bold)
+            AppPreferences.OVERLAY_FONT_ATMA -> previewTypeface(R.font.atma_regular)
+            AppPreferences.OVERLAY_FONT_ATMA_MEDIUM -> previewTypeface(R.font.atma_medium)
             else -> Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
     }
 
+    private fun previewTypeface(fontResource: Int): Typeface =
+        ResourcesCompat.getFont(this, fontResource) ?: Typeface.DEFAULT_BOLD
+
     private fun animateOverlayPreview(style: String) {
         previewText.animate().cancel()
-        previewText.alpha = 0.25f
+        previewText.translationX = 0f
+        previewText.translationY = 0f
+        previewText.rotationX = 0f
+        previewText.scaleX = 1f
+        previewText.scaleY = 1f
+        if (style == AppPreferences.OVERLAY_ANIMATION_NONE) {
+            previewText.alpha = 1f
+            return
+        }
+
+        previewText.alpha = 0.18f
         when (style) {
-            AppPreferences.OVERLAY_ANIMATION_SLIDE -> {
-                previewText.translationY = dp(12).toFloat()
-                previewText.scaleX = 0.97f
-                previewText.scaleY = 0.97f
+            AppPreferences.OVERLAY_ANIMATION_SLIDE -> previewText.translationX = dp(28).toFloat()
+            AppPreferences.OVERLAY_ANIMATION_RISE -> previewText.translationY = dp(18).toFloat()
+            AppPreferences.OVERLAY_ANIMATION_POP -> {
+                previewText.scaleX = 0.58f
+                previewText.scaleY = 0.58f
+            }
+            AppPreferences.OVERLAY_ANIMATION_FLIP -> {
+                previewText.rotationX = 72f
+                previewText.scaleY = 0.9f
+            }
+            AppPreferences.OVERLAY_ANIMATION_SCALE -> {
+                previewText.scaleX = 0.82f
+                previewText.scaleY = 0.82f
             }
             AppPreferences.OVERLAY_ANIMATION_FADE -> {
-                previewText.translationY = 0f
-                previewText.scaleX = 1f
-                previewText.scaleY = 1f
-            }
-            else -> {
-                previewText.translationY = 0f
-                previewText.scaleX = 0.86f
-                previewText.scaleY = 0.86f
+                previewText.scaleX = 0.98f
+                previewText.scaleY = 0.98f
             }
         }
         previewText.animate()
             .alpha(1f)
+            .translationX(0f)
             .translationY(0f)
+            .rotationX(0f)
             .scaleX(1f)
             .scaleY(1f)
-            .setDuration(330L)
+            .setDuration(if (style == AppPreferences.OVERLAY_ANIMATION_POP) 420L else 340L)
+            .setInterpolator(
+                if (style == AppPreferences.OVERLAY_ANIMATION_POP) {
+                    OvershootInterpolator(1.3f)
+                } else {
+                    DecelerateInterpolator(1.5f)
+                }
+            )
             .start()
     }
 

@@ -16,7 +16,10 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.AccelerateDecelerateInterpolator
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.widget.TextView
+import androidx.core.content.res.ResourcesCompat
 
 class OverlayService : Service(), AppPreferenceListener {
 
@@ -117,19 +120,22 @@ class OverlayService : Service(), AppPreferenceListener {
         colorAnimator?.cancel()
         textView.visibility = View.VISIBLE
 
-        if (textView.text.isNullOrEmpty() || textView.alpha == 0f) {
+        if (animationStyle == ANIMATION_NONE || textView.text.isNullOrEmpty() || textView.alpha == 0f) {
             setAndAnimateIn(textView, text, lineIndex, generation)
             return true
         }
 
         val outgoing = textView.animate()
             .alpha(0f)
-            .setDuration(90L)
+            .setDuration(95L)
             .setInterpolator(AccelerateDecelerateInterpolator())
 
         when (animationStyle) {
-            ANIMATION_SLIDE -> outgoing.translationY(-dp(8f).toFloat()).scaleX(0.97f).scaleY(0.97f)
-            ANIMATION_FADE -> outgoing.scaleX(0.97f).scaleY(0.97f)
+            ANIMATION_SLIDE -> outgoing.translationX(-dp(22f).toFloat())
+            ANIMATION_RISE -> outgoing.translationY(-dp(12f).toFloat())
+            ANIMATION_FLIP -> outgoing.rotationX(-55f).scaleY(0.92f)
+            ANIMATION_POP -> outgoing.scaleX(0.72f).scaleY(0.72f)
+            ANIMATION_FADE -> outgoing.scaleX(0.98f).scaleY(0.98f)
             else -> outgoing.scaleX(0.88f).scaleY(0.88f)
         }
 
@@ -152,24 +158,39 @@ class OverlayService : Service(), AppPreferenceListener {
         val startColor = textView.currentTextColor
         val targetColor = colorVariantForLine(preferredColor, lineIndex)
         textView.text = text
-        textView.alpha = 0f
         textView.visibility = View.VISIBLE
+        textView.translationX = 0f
+        textView.translationY = 0f
+        textView.rotationX = 0f
+        textView.rotationY = 0f
+        textView.scaleX = 1f
+        textView.scaleY = 1f
 
+        if (animationStyle == ANIMATION_NONE) {
+            textView.alpha = 1f
+            textView.setTextColor(targetColor)
+            return
+        }
+
+        textView.alpha = 0f
         when (animationStyle) {
-            ANIMATION_SLIDE -> {
-                textView.translationY = dp(10f).toFloat()
-                textView.scaleX = 0.97f
-                textView.scaleY = 0.97f
+            ANIMATION_SLIDE -> textView.translationX = dp(26f).toFloat()
+            ANIMATION_RISE -> textView.translationY = dp(18f).toFloat()
+            ANIMATION_FLIP -> {
+                textView.rotationX = 72f
+                textView.scaleY = 0.90f
+            }
+            ANIMATION_POP -> {
+                textView.scaleX = 0.62f
+                textView.scaleY = 0.62f
             }
             ANIMATION_FADE -> {
-                textView.translationY = 0f
-                textView.scaleX = 0.97f
-                textView.scaleY = 0.97f
+                textView.scaleX = 0.98f
+                textView.scaleY = 0.98f
             }
             else -> {
-                textView.translationY = 0f
-                textView.scaleX = 0.88f
-                textView.scaleY = 0.88f
+                textView.scaleX = 0.86f
+                textView.scaleY = 0.86f
             }
         }
 
@@ -183,11 +204,19 @@ class OverlayService : Service(), AppPreferenceListener {
 
         textView.animate()
             .alpha(1f)
+            .translationX(0f)
             .translationY(0f)
+            .rotationX(0f)
             .scaleX(1f)
             .scaleY(1f)
-            .setDuration(230L)
-            .setInterpolator(AccelerateDecelerateInterpolator())
+            .setDuration(if (animationStyle == ANIMATION_POP) 300L else 235L)
+            .setInterpolator(
+                when (animationStyle) {
+                    ANIMATION_POP -> OvershootInterpolator(1.25f)
+                    ANIMATION_RISE, ANIMATION_SLIDE -> DecelerateInterpolator(1.6f)
+                    else -> AccelerateDecelerateInterpolator()
+                }
+            )
             .start()
     }
 
@@ -307,10 +336,18 @@ class OverlayService : Service(), AppPreferenceListener {
             FONT_REGULAR -> Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
             FONT_SERIF -> Typeface.create(Typeface.SERIF, Typeface.BOLD)
             FONT_MONOSPACE -> Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            FONT_HIND_SILIGURI -> bundledTypeface(R.font.hind_siliguri_regular)
+            FONT_HIND_SILIGURI_MEDIUM -> bundledTypeface(R.font.hind_siliguri_medium)
+            FONT_HIND_SILIGURI_BOLD -> bundledTypeface(R.font.hind_siliguri_bold)
+            FONT_ATMA -> bundledTypeface(R.font.atma_regular)
+            FONT_ATMA_MEDIUM -> bundledTypeface(R.font.atma_medium)
             else -> Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
         }
         textView.setTextColor(preferredColor)
     }
+
+    private fun bundledTypeface(fontResource: Int): Typeface =
+        ResourcesCompat.getFont(this, fontResource) ?: Typeface.DEFAULT_BOLD
 
     private fun applySavedPosition() {
         val view = lyricTextView ?: return
@@ -350,10 +387,19 @@ class OverlayService : Service(), AppPreferenceListener {
         const val FONT_BOLD = AppPreferences.OVERLAY_FONT_BOLD
         const val FONT_SERIF = AppPreferences.OVERLAY_FONT_SERIF
         const val FONT_MONOSPACE = AppPreferences.OVERLAY_FONT_MONOSPACE
+        const val FONT_HIND_SILIGURI = AppPreferences.OVERLAY_FONT_HIND_SILIGURI
+        const val FONT_HIND_SILIGURI_MEDIUM = AppPreferences.OVERLAY_FONT_HIND_SILIGURI_MEDIUM
+        const val FONT_HIND_SILIGURI_BOLD = AppPreferences.OVERLAY_FONT_HIND_SILIGURI_BOLD
+        const val FONT_ATMA = AppPreferences.OVERLAY_FONT_ATMA
+        const val FONT_ATMA_MEDIUM = AppPreferences.OVERLAY_FONT_ATMA_MEDIUM
 
         const val ANIMATION_FADE = AppPreferences.OVERLAY_ANIMATION_FADE
         const val ANIMATION_SCALE = AppPreferences.OVERLAY_ANIMATION_SCALE
         const val ANIMATION_SLIDE = AppPreferences.OVERLAY_ANIMATION_SLIDE
+        const val ANIMATION_RISE = AppPreferences.OVERLAY_ANIMATION_RISE
+        const val ANIMATION_POP = AppPreferences.OVERLAY_ANIMATION_POP
+        const val ANIMATION_FLIP = AppPreferences.OVERLAY_ANIMATION_FLIP
+        const val ANIMATION_NONE = AppPreferences.OVERLAY_ANIMATION_NONE
 
         const val DEFAULT_FONT_SIZE = AppPreferences.DEFAULT_OVERLAY_FONT_SIZE
         const val MIN_FONT_SIZE = AppPreferences.MIN_OVERLAY_FONT_SIZE

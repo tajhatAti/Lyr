@@ -239,6 +239,7 @@ class LyricsActivity : AppCompatActivity(),
             LyricsLoadState.IDLE -> showLyricsEmpty(R.string.lyrics_choose_song)
             LyricsLoadState.SEARCHING -> showLyricsEmpty(R.string.lyrics_loading)
             LyricsLoadState.NOT_FOUND -> showLyricsEmpty(R.string.no_timed_lyrics)
+            LyricsLoadState.SKIPPED_LONG_AUDIO -> showLyricsEmpty(R.string.lyrics_long_audio_explanation)
             LyricsLoadState.READY -> if (currentLines.isEmpty()) showLyricsEmpty(R.string.no_timed_lyrics)
         }
     }

@@ -100,10 +100,14 @@ object MusicScannerUtil {
                     }
                     songs += Song(
                         id = id,
-                        title = AppPreferences.songTitle(id) ?: mediaStoreTitle,
+                        title = AppPreferences.songTitle(id)
+                            ?: AppPreferences.identifiedSongTitle(id)
+                            ?: mediaStoreTitle,
                         sourceTitle = mediaStoreTitle,
-                        artist = rawArtist
-                            .takeUnless { it.isBlank() || it.equals("<unknown>", ignoreCase = true) }
+                        artist = AppPreferences.identifiedSongArtist(id)
+                            ?: rawArtist.takeUnless {
+                                it.isBlank() || it.equals("<unknown>", ignoreCase = true)
+                            }
                             ?: context.getString(R.string.unknown_artist),
                         album = rawAlbum
                             .takeUnless { it.isBlank() || it.equals("<unknown>", ignoreCase = true) }

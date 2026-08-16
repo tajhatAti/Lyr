@@ -17,7 +17,12 @@ enum class AppFont(val displayName: String, @FontRes val resourceId: Int) {
     POPPINS("Poppins", R.font.poppins),
     NUNITO("Nunito", R.font.nunito),
     LORA("Lora", R.font.lora),
-    SOURCE_SANS("Source Sans 3", R.font.source_sans_3)
+    SOURCE_SANS("Source Sans 3", R.font.source_sans_3),
+    HIND_SILIGURI("Hind Siliguri · বাংলা", R.font.hind_siliguri_regular),
+    HIND_SILIGURI_MEDIUM("Hind Siliguri Medium · বাংলা", R.font.hind_siliguri_medium),
+    HIND_SILIGURI_BOLD("Hind Siliguri Bold · বাংলা", R.font.hind_siliguri_bold),
+    ATMA("Atma · বাংলা", R.font.atma_regular),
+    ATMA_MEDIUM("Atma Medium · বাংলা", R.font.atma_medium)
 }
 
 data class CustomizationSnapshot(
@@ -58,15 +63,26 @@ object AppPreferences {
     const val KEY_OVERLAY_X = "overlay_x"
     const val KEY_OVERLAY_Y = "overlay_y"
     const val KEY_SONG_TITLE_PREFIX = "song_title_"
+    const val KEY_IDENTIFIED_TITLE_PREFIX = "identified_song_title_"
+    const val KEY_IDENTIFIED_ARTIST_PREFIX = "identified_song_artist_"
 
     const val OVERLAY_FONT_REGULAR = "regular"
     const val OVERLAY_FONT_BOLD = "bold"
     const val OVERLAY_FONT_SERIF = "serif"
     const val OVERLAY_FONT_MONOSPACE = "monospace"
+    const val OVERLAY_FONT_HIND_SILIGURI = "hind_siliguri"
+    const val OVERLAY_FONT_HIND_SILIGURI_MEDIUM = "hind_siliguri_medium"
+    const val OVERLAY_FONT_HIND_SILIGURI_BOLD = "hind_siliguri_bold"
+    const val OVERLAY_FONT_ATMA = "atma"
+    const val OVERLAY_FONT_ATMA_MEDIUM = "atma_medium"
 
     const val OVERLAY_ANIMATION_FADE = "fade"
     const val OVERLAY_ANIMATION_SCALE = "scale"
     const val OVERLAY_ANIMATION_SLIDE = "slide"
+    const val OVERLAY_ANIMATION_RISE = "rise"
+    const val OVERLAY_ANIMATION_POP = "pop"
+    const val OVERLAY_ANIMATION_FLIP = "flip"
+    const val OVERLAY_ANIMATION_NONE = "none"
 
     const val DEFAULT_OVERLAY_FONT_SIZE = 24f
     const val MIN_OVERLAY_FONT_SIZE = 14f
@@ -198,6 +214,32 @@ object AppPreferences {
         ?.removePrefix(KEY_SONG_TITLE_PREFIX)
         ?.toLongOrNull()
 
+    fun identifiedSongTitle(songId: Long): String? = preferences
+        .getString(identifiedTitleKey(songId), null)
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+
+    fun identifiedSongArtist(songId: Long): String? = preferences
+        .getString(identifiedArtistKey(songId), null)
+        ?.trim()
+        ?.takeIf(String::isNotEmpty)
+
+    fun setIdentifiedSong(songId: Long, title: String, artist: String) {
+        val cleanedTitle = title.trim().take(160)
+        val cleanedArtist = artist.trim().take(160)
+        if (cleanedTitle.isBlank() || cleanedArtist.isBlank()) return
+        preferences.edit()
+            .putString(identifiedTitleKey(songId), cleanedTitle)
+            .putString(identifiedArtistKey(songId), cleanedArtist)
+            .apply()
+    }
+
+    fun songIdFromIdentifiedKey(key: String): Long? = when {
+        key.startsWith(KEY_IDENTIFIED_TITLE_PREFIX) -> key.removePrefix(KEY_IDENTIFIED_TITLE_PREFIX)
+        key.startsWith(KEY_IDENTIFIED_ARTIST_PREFIX) -> key.removePrefix(KEY_IDENTIFIED_ARTIST_PREFIX)
+        else -> null
+    }?.toLongOrNull()
+
     fun overlayFontSize(): Float = preferences.getFloat(
         KEY_OVERLAY_FONT_SIZE,
         DEFAULT_OVERLAY_FONT_SIZE
@@ -261,6 +303,10 @@ object AppPreferences {
     }
 
     private fun songTitleKey(songId: Long): String = "$KEY_SONG_TITLE_PREFIX$songId"
+
+    private fun identifiedTitleKey(songId: Long): String = "$KEY_IDENTIFIED_TITLE_PREFIX$songId"
+
+    private fun identifiedArtistKey(songId: Long): String = "$KEY_IDENTIFIED_ARTIST_PREFIX$songId"
 
     private fun opaqueColor(color: Int): Int = Color.rgb(
         Color.red(color),

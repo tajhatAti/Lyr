@@ -69,10 +69,12 @@ class MainActivity : AppCompatActivity(),
     private var displayedSongId: Long? = null
     private var displayedPlayingState: Boolean? = null
     private var lyricsLoadState = LyricsLoadState.IDLE
+    private var automaticLyricsState = AiLyricsJobState()
     private var overlayPermissionPromptShown = false
     private var layoutAnimationGeneration = 0
     private var libraryScanGeneration = 0
     private var refreshAnimator: ObjectAnimator? = null
+    private var lyricsStatusAnimator: ObjectAnimator? = null
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -150,6 +152,7 @@ class MainActivity : AppCompatActivity(),
         AppPreferences.unregisterListener(this)
         scannerExecutor.shutdownNow()
         refreshAnimator?.cancel()
+        lyricsStatusAnimator?.cancel()
         adapter.release()
         super.onDestroy()
     }
@@ -162,6 +165,10 @@ class MainActivity : AppCompatActivity(),
 
             AppPreferences.songIdFromTitleKey(changedKey)?.let { songId ->
                 applyRenamedSong(songId)
+                return@runOnUiThread
+            }
+            AppPreferences.songIdFromIdentifiedKey(changedKey)?.let { songId ->
+                applyIdentifiedSong(songId)
                 return@runOnUiThread
             }
 
@@ -251,6 +258,11 @@ class MainActivity : AppCompatActivity(),
 
     override fun onLyricsLoadStateChanged(state: LyricsLoadState) {
         lyricsLoadState = state
+        updateLyricsStatus()
+    }
+
+    override fun onAutomaticLyricsProgress(state: AiLyricsJobState) {
+        automaticLyricsState = state
         updateLyricsStatus()
     }
 
@@ -589,6 +601,20 @@ class MainActivity : AppCompatActivity(),
         sortAndDisplaySongs(preserveAnchor = true)
     }
 
+    private fun applyIdentifiedSong(songId: Long) {
+        val identifiedTitle = AppPreferences.identifiedSongTitle(songId) ?: return
+        val identifiedArtist = AppPreferences.identifiedSongArtist(songId) ?: return
+        val index = scannedSongs.indexOfFirst { it.id == songId }
+        if (index < 0) return
+        val displayTitle = AppPreferences.songTitle(songId) ?: identifiedTitle
+        scannedSongs[index] = scannedSongs[index].copy(
+            title = displayTitle,
+            artist = identifiedArtist
+        )
+        playerService?.updateSongIdentity(songId, displayTitle, identifiedArtist)
+        sortAndDisplaySongs(preserveAnchor = true)
+    }
+
     private fun updateLibrarySummary() {
         val sortLabel = when (customization.sortOrder) {
             LibrarySortOrder.TITLE -> getString(R.string.sort_title_short)
@@ -611,11 +637,39 @@ class MainActivity : AppCompatActivity(),
 
     private fun updateLyricsStatus() {
         if (!::miniLyricsStatus.isInitialized || displayedSongId == null) {
-            if (::miniLyricsStatus.isInitialized) miniLyricsStatus.visibility = View.GONE
+            if (::miniLyricsStatus.isInitialized) {
+                miniLyricsStatus.visibility = View.GONE
+                stopLyricsStatusAnimation()
+            }
             return
         }
         miniLyricsStatus.visibility = View.VISIBLE
+        updateLyricsStatusAnimation()
         miniLyricsStatus.setTextColor(customization.accentColor)
+        if (automaticLyricsState.isRunning) {
+            val progress = automaticLyricsState.progress.coerceIn(0, 100)
+            miniLyricsStatus.text = automaticLyricsState.message
+                ?.takeIf(String::isNotBlank)
+                ?.let { message -> if (progress > 0) "$message  $progress%" else message }
+                ?: getString(R.string.lyrics_creating_automatically)
+            miniLyricsStatus.isClickable = true
+            miniLyricsStatus.setOnClickListener {
+                startActivity(Intent(this, LyricsActivity::class.java))
+            }
+            return
+        }
+        if (lyricsLoadState == LyricsLoadState.SKIPPED_LONG_AUDIO) {
+            miniLyricsStatus.setText(R.string.lyrics_long_audio_skipped_short)
+            miniLyricsStatus.isClickable = true
+            miniLyricsStatus.setOnClickListener {
+                MaterialAlertDialogBuilder(this)
+                    .setTitle(R.string.lyrics_long_audio_title)
+                    .setMessage(R.string.lyrics_long_audio_explanation)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show()
+            }
+            return
+        }
         if (!Settings.canDrawOverlays(this)) {
             miniLyricsStatus.setText(R.string.lyrics_overlay_permission_needed)
             miniLyricsStatus.isClickable = true
@@ -640,7 +694,29 @@ class MainActivity : AppCompatActivity(),
                 miniLyricsStatus.isClickable = true
                 miniLyricsStatus.setOnClickListener { playerService?.retryLyrics() }
             }
+            // Handled before overlay permission because the eight-minute policy must stay visible.
+            LyricsLoadState.SKIPPED_LONG_AUDIO -> Unit
         }
+    }
+
+    private fun updateLyricsStatusAnimation() {
+        val shouldAnimate = lyricsLoadState == LyricsLoadState.SEARCHING || automaticLyricsState.isRunning
+        if (!shouldAnimate) {
+            stopLyricsStatusAnimation()
+            return
+        }
+        if (lyricsStatusAnimator?.isRunning == true) return
+        lyricsStatusAnimator = ObjectAnimator.ofFloat(miniLyricsStatus, View.ALPHA, 1f, 0.5f, 1f).apply {
+            duration = 1_250L
+            repeatCount = ValueAnimator.INFINITE
+            start()
+        }
+    }
+
+    private fun stopLyricsStatusAnimation() {
+        lyricsStatusAnimator?.cancel()
+        lyricsStatusAnimator = null
+        if (::miniLyricsStatus.isInitialized) miniLyricsStatus.alpha = 1f
     }
 
     private fun maybeShowOverlayPermissionPrompt() {

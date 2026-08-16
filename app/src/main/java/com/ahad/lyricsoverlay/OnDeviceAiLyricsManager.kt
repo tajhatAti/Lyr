@@ -109,7 +109,8 @@ object OnDeviceAiLyricsManager {
         val song: Song,
         val mode: AiLyricsMode,
         val knownLyrics: String,
-        val language: String
+        val language: String,
+        val initialOnlineAlreadyChecked: Boolean
     )
 
     private data class RecognitionCheckpoint(
@@ -169,12 +170,18 @@ object OnDeviceAiLyricsManager {
         )
     }
 
+    fun activeSong(): Song? = currentRequest?.song
+
+    fun activeMode(): AiLyricsMode? = currentRequest?.mode
+
+    @Synchronized
     fun start(
         context: Context,
         song: Song,
         mode: AiLyricsMode,
         knownLyrics: String,
-        forceBengaliScript: Boolean = false
+        forceBengaliScript: Boolean = false,
+        initialOnlineAlreadyChecked: Boolean = false
     ): Boolean {
         if (state.isRunning || !isDurationEligible(song.durationMs)) return false
         if (mode == AiLyricsMode.ALIGN_KNOWN_LYRICS && knownLyrics.isBlank()) return false
@@ -195,7 +202,8 @@ object OnDeviceAiLyricsManager {
                     artist = song.artist,
                     knownLyrics = knownLyrics
                 )
-            }
+            },
+            initialOnlineAlreadyChecked = initialOnlineAlreadyChecked
         )
         currentRequest = request
         persistRequest(appContext, request)
@@ -205,7 +213,11 @@ object OnDeviceAiLyricsManager {
                 songId = song.id,
                 phase = AiJobPhase.SEARCHING_ONLINE,
                 progress = 1,
-                message = "Checking song details online first…"
+                message = if (initialOnlineAlreadyChecked) {
+                    "No reliable metadata match; checking local lyrics and preparing on-phone listening…"
+                } else {
+                    "Checking song details online first…"
+                }
             )
         )
         OnDeviceAiService.ensureRunning(appContext)
@@ -313,6 +325,9 @@ object OnDeviceAiLyricsManager {
         workDir.mkdirs()
 
         val metadataSearchMarker = File(workDir, INITIAL_SEARCH_MARKER)
+        if (request.initialOnlineAlreadyChecked && !metadataSearchMarker.isFile) {
+            writeAtomically(metadataSearchMarker, "checked_by_playback")
+        }
         if (!metadataSearchMarker.isFile) {
             try {
                 updateIfCurrent(
@@ -453,7 +468,7 @@ object OnDeviceAiLyricsManager {
                         songId = song.id,
                         phase = AiJobPhase.SEARCHING_RECOGNIZED,
                         progress = 95,
-                        message = "Searching online again with words heard on this phone…"
+                        message = "Checking LRCLIB and community song matches with words heard on this phone…"
                     )
                 )
                 val recognizedMatch = try {
@@ -726,7 +741,9 @@ object OnDeviceAiLyricsManager {
                         config = WhisperConfig(
                             language = language,
                             translate = false,
-                            threads = threads
+                            threads = threads,
+                            maxSegmentLength = MAX_TRANSCRIPTION_SEGMENT_CHARACTERS,
+                            printTimestamps = true
                         )
                     )
                 }
@@ -1078,6 +1095,7 @@ object OnDeviceAiLyricsManager {
             put("mode", request.mode.name)
             put("knownLyrics", request.knownLyrics)
             put("language", request.language)
+            put("initialOnlineAlreadyChecked", request.initialOnlineAlreadyChecked)
             put("languagePolicyVersion", NATIVE_SCRIPT_POLICY_VERSION)
             put("song", JSONObject().apply {
                 put("id", song.id)
@@ -1134,7 +1152,8 @@ object OnDeviceAiLyricsManager {
                     artist = songJson.getString("artist"),
                     knownLyrics = json.optString("knownLyrics")
                 )
-            }
+            },
+            initialOnlineAlreadyChecked = json.optBoolean("initialOnlineAlreadyChecked", false)
         )
         } catch (_: Exception) {
             null
@@ -1398,6 +1417,7 @@ object OnDeviceAiLyricsManager {
     private const val RECOGNITION_STATE_FILE = "recognized-chunks.json"
     private const val FAST_IDENTIFICATION_CHUNKS = 2
     private const val MIN_FAST_SEARCH_TOKENS = 5
+    private const val MAX_TRANSCRIPTION_SEGMENT_CHARACTERS = 36
     private const val NATIVE_SCRIPT_POLICY_VERSION = 2
     private val PERSISTENCE_LOCK = Any()
     private const val HIGH_RAM_THRESHOLD_BYTES = 5_500L * 1024L * 1024L

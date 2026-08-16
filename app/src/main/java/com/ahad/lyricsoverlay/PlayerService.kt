@@ -33,9 +33,9 @@ import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import kotlin.random.Random
 
-enum class LyricsLoadState { IDLE, SEARCHING, READY, NOT_FOUND }
+enum class LyricsLoadState { IDLE, SEARCHING, READY, NOT_FOUND, SKIPPED_LONG_AUDIO }
 
-class PlayerService : Service() {
+class PlayerService : Service(), OnDeviceAiLyricsManager.Listener {
 
     interface PlayerListener {
         fun onPlayerStateChanged(
@@ -49,6 +49,8 @@ class PlayerService : Service() {
         fun onLyricsLoadStateChanged(state: LyricsLoadState)
 
         fun onLyricsContentChanged(result: LyricsResult?) = Unit
+
+        fun onAutomaticLyricsProgress(state: AiLyricsJobState) = Unit
 
         fun onSleepTimerChanged(endAtMs: Long, afterCurrentSong: Boolean) = Unit
 
@@ -95,6 +97,9 @@ class PlayerService : Service() {
     private var resolvedLyrics: LyricsResult? = null
     private var lyricsResolutionComplete = false
     private var lyricsLoadState = LyricsLoadState.IDLE
+    private var automaticLyricsSong: Song? = null
+    private var pendingAutomaticLyricsSong: Song? = null
+    private var adoptingAutomaticLyricsSongId: Long? = null
 
     private val overlayConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -159,6 +164,7 @@ class PlayerService : Service() {
         super.onCreate()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         lyricsRepository = LyricsRepository(applicationContext)
+        OnDeviceAiLyricsManager.addListener(this)
         shuffleEnabled = AppPreferences.playerShuffleEnabled()
         repeatMode = AppPreferences.playerRepeatMode()
         sleepTimerEndAtMs = AppPreferences.sleepTimerEndAtMs()
@@ -203,6 +209,7 @@ class PlayerService : Service() {
     }
 
     override fun onDestroy() {
+        OnDeviceAiLyricsManager.removeListener(this)
         mainHandler.removeCallbacksAndMessages(null)
         lyricsGeneration++
         lyricsExecutor.shutdownNow()
@@ -237,6 +244,7 @@ class PlayerService : Service() {
         )
         newListener.onLyricsLoadStateChanged(lyricsLoadState)
         newListener.onLyricsContentChanged(resolvedLyrics)
+        newListener.onAutomaticLyricsProgress(currentAutomaticLyricsUiState())
         newListener.onSleepTimerChanged(sleepTimerEndAtMs, sleepAfterCurrentSong)
         newListener.onQueueChanged(queue.toList(), currentIndex)
         newListener.onPlaybackModeChanged(shuffleEnabled, repeatMode)
@@ -323,6 +331,20 @@ class PlayerService : Service() {
         }
     }
 
+    fun updateSongIdentity(songId: Long, title: String, artist: String) {
+        val cleanedTitle = title.trim()
+        val cleanedArtist = artist.trim()
+        if (cleanedTitle.isEmpty() || cleanedArtist.isEmpty() || queue.none { it.id == songId }) return
+        queue = queue.map { song ->
+            if (song.id == songId) song.copy(title = cleanedTitle, artist = cleanedArtist) else song
+        }
+        publishQueue()
+        currentSong()?.takeIf { it.id == songId }?.let { current ->
+            updateMediaMetadata(current)
+            publishState()
+        }
+    }
+
     fun synchronizeSongMetadata(scannedSongs: List<Song>) {
         if (queue.isEmpty() || scannedSongs.isEmpty()) return
         val updatedById = scannedSongs.associateBy(Song::id)
@@ -359,10 +381,23 @@ class PlayerService : Service() {
         updateLyricsLoadState(LyricsLoadState.SEARCHING)
         val requestGeneration = ++lyricsGeneration
         lyricsExecutor.execute {
-            val refreshed = lyricsRepository.refreshFromOnline(song)
+            val refreshed = if (OnDeviceAiLyricsManager.isDurationEligible(song.durationMs)) {
+                lyricsRepository.refreshFromOnline(song)
+            } else {
+                lyricsRepository.findOfflineLyrics(song)
+            }
             mainHandler.post {
                 if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) return@post
-                applyLyricsResult(refreshed)
+                when {
+                    refreshed != null -> applyLyricsResult(refreshed)
+                    OnDeviceAiLyricsManager.isDurationEligible(song.durationMs) -> {
+                        startAutomaticLyrics(song)
+                    }
+                    else -> {
+                        applyLyricsResult(null)
+                        updateLyricsLoadState(LyricsLoadState.SKIPPED_LONG_AUDIO)
+                    }
+                }
             }
         }
     }
@@ -557,6 +592,7 @@ class PlayerService : Service() {
         buffering = true
         clearResolvedLyrics()
         updateLyricsLoadState(LyricsLoadState.SEARCHING)
+        notifyAutomaticLyricsProgress(currentAutomaticLyricsUiState())
 
         val player = MediaPlayer()
         mediaPlayer = player
@@ -656,15 +692,212 @@ class PlayerService : Service() {
     private fun resolveLyrics(song: Song) {
         updateLyricsLoadState(LyricsLoadState.SEARCHING)
         val requestGeneration = ++lyricsGeneration
+        val automaticProcessingAllowed = OnDeviceAiLyricsManager.isDurationEligible(song.durationMs)
         lyricsExecutor.execute {
-            val lyrics = lyricsRepository.findLyrics(song)
+            val lyrics = if (automaticProcessingAllowed) {
+                lyricsRepository.findSmartInitialLyrics(song)
+            } else {
+                lyricsRepository.findOfflineLyrics(song)
+            }
             mainHandler.post {
                 if (requestGeneration != lyricsGeneration || currentSong()?.id != song.id) {
                     return@post
                 }
-                applyLyricsResult(lyrics)
+                when {
+                    lyrics != null -> applyLyricsResult(lyrics)
+                    !automaticProcessingAllowed -> {
+                        applyLyricsResult(null)
+                        updateLyricsLoadState(LyricsLoadState.SKIPPED_LONG_AUDIO)
+                    }
+                    else -> startAutomaticLyrics(song)
+                }
             }
         }
+    }
+
+    private fun startAutomaticLyrics(song: Song) {
+        val activeSong = OnDeviceAiLyricsManager.activeSong()
+        val state = OnDeviceAiLyricsManager.currentState()
+        if (state.isRunning) {
+            if (activeSong?.id != song.id) {
+                pendingAutomaticLyricsSong = song
+                notifyAutomaticLyricsProgress(
+                    AiLyricsJobState(
+                        phase = AiJobPhase.SEARCHING_ONLINE,
+                        progress = 0,
+                        message = "Queued behind lyrics already being created on this phone."
+                    )
+                )
+            } else {
+                pendingAutomaticLyricsSong = null
+                notifyAutomaticLyricsProgress(state)
+            }
+            return
+        }
+        if (activeSong?.id == song.id &&
+            OnDeviceAiLyricsManager.activeMode() == AiLyricsMode.AUDIO_ONLY &&
+            state.phase == AiJobPhase.COMPLETED
+        ) {
+            onAiLyricsJobChanged(state)
+            return
+        }
+        if (state.phase != AiJobPhase.IDLE) {
+            if (OnDeviceAiLyricsManager.activeMode() != AiLyricsMode.AUDIO_ONLY &&
+                state.phase == AiJobPhase.COMPLETED
+            ) {
+                pendingAutomaticLyricsSong = song
+                notifyAutomaticLyricsProgress(
+                    AiLyricsJobState(
+                        phase = AiJobPhase.SEARCHING_ONLINE,
+                        progress = 0,
+                        message = "Queued until the open lyrics draft is saved or closed."
+                    )
+                )
+                return
+            }
+            OnDeviceAiLyricsManager.clearFinishedResult()
+        }
+        pendingAutomaticLyricsSong = null
+        val started = OnDeviceAiLyricsManager.start(
+            context = applicationContext,
+            song = song,
+            mode = AiLyricsMode.AUDIO_ONLY,
+            knownLyrics = "",
+            initialOnlineAlreadyChecked = true
+        )
+        if (started) {
+            automaticLyricsSong = song
+        } else {
+            updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
+        }
+    }
+
+    override fun onAiLyricsJobChanged(state: AiLyricsJobState) {
+        val managerSong = OnDeviceAiLyricsManager.activeSong()
+        val activeSong = managerSong ?: automaticLyricsSong?.takeIf { it.id == state.songId }
+        val activeMode = OnDeviceAiLyricsManager.activeMode()
+            ?: if (automaticLyricsSong?.id == state.songId) AiLyricsMode.AUDIO_ONLY else null
+        notifyAutomaticLyricsProgress(currentAutomaticLyricsUiState())
+
+        if (state.phase == AiJobPhase.IDLE) {
+            val pending = pendingAutomaticLyricsSong
+            if (pending != null && currentSong()?.id == pending.id) {
+                pendingAutomaticLyricsSong = null
+                startAutomaticLyrics(pending)
+            }
+            return
+        }
+        if (activeMode != AiLyricsMode.AUDIO_ONLY) return
+
+        val visibleSong = currentSong()
+        if (state.isRunning && activeSong?.id == visibleSong?.id) {
+            updateLyricsLoadState(LyricsLoadState.SEARCHING)
+        }
+
+        when (state.phase) {
+            AiJobPhase.COMPLETED -> {
+                val finishedSong = activeSong ?: return
+                if (adoptingAutomaticLyricsSongId == finishedSong.id) return
+                val rawLyrics = state.rawLrc.orEmpty()
+                if (rawLyrics.isBlank()) {
+                    finishAutomaticLyricsAttempt(finishedSong, success = false)
+                    return
+                }
+                adoptingAutomaticLyricsSongId = finishedSong.id
+                lyricsExecutor.execute {
+                    val existingOfflineLyrics = lyricsRepository.findOfflineLyrics(finishedSong)
+                    val shouldPersistGeneratedLyrics = state.resultSource == AiLyricsResultSource.ON_DEVICE ||
+                        state.resultSource == AiLyricsResultSource.ALIGNED_ON_DEVICE
+                    val persisted = when {
+                        existingOfflineLyrics != null -> true
+                        shouldPersistGeneratedLyrics -> lyricsRepository.saveUserLyrics(
+                            finishedSong,
+                            rawLyrics,
+                            LyricsSource.AI_GENERATED
+                        )
+                        else -> true
+                    }
+                    val restored = existingOfflineLyrics
+                        ?: lyricsRepository.findOfflineLyrics(finishedSong)
+                    val result = restored ?: LyricsResult(
+                        rawLrc = rawLyrics,
+                        source = when (state.resultSource) {
+                            AiLyricsResultSource.ONLINE -> LyricsSource.ONLINE_AUTO
+                            AiLyricsResultSource.LOCAL_FILE -> LyricsSource.LOCAL_SIDECAR
+                            else -> LyricsSource.AI_GENERATED
+                        }
+                    )
+                    mainHandler.post {
+                        adoptingAutomaticLyricsSongId = null
+                        if (persisted && currentSong()?.id == finishedSong.id) {
+                            val title = AppPreferences.songTitle(finishedSong.id)
+                                ?: AppPreferences.identifiedSongTitle(finishedSong.id)
+                                ?: finishedSong.title
+                            val artist = AppPreferences.identifiedSongArtist(finishedSong.id)
+                                ?: finishedSong.artist
+                            updateSongIdentity(finishedSong.id, title, artist)
+                            applyLyricsResult(result)
+                        } else if (!persisted && currentSong()?.id == finishedSong.id) {
+                            updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
+                        }
+                        if (persisted) {
+                            OnDeviceAiLyricsManager.clearFinishedResult()
+                            if (automaticLyricsSong?.id == finishedSong.id) {
+                                automaticLyricsSong = null
+                            }
+                        }
+                        startPendingAutomaticLyricsIfNeeded(finishedSong.id)
+                    }
+                }
+            }
+
+            AiJobPhase.FAILED, AiJobPhase.CANCELED -> {
+                val finishedSong = activeSong ?: return
+                finishAutomaticLyricsAttempt(finishedSong, success = false)
+            }
+
+            else -> Unit
+        }
+    }
+
+    private fun finishAutomaticLyricsAttempt(song: Song, success: Boolean) {
+        if (!success && currentSong()?.id == song.id) {
+            updateLyricsLoadState(LyricsLoadState.NOT_FOUND)
+        }
+        OnDeviceAiLyricsManager.clearFinishedResult()
+        if (automaticLyricsSong?.id == song.id) automaticLyricsSong = null
+        startPendingAutomaticLyricsIfNeeded(song.id)
+    }
+
+    private fun startPendingAutomaticLyricsIfNeeded(finishedSongId: Long) {
+        val pending = pendingAutomaticLyricsSong
+        pendingAutomaticLyricsSong = null
+        if (pending != null && pending.id != finishedSongId && currentSong()?.id == pending.id) {
+            startAutomaticLyrics(pending)
+        }
+    }
+
+    private fun currentAutomaticLyricsUiState(): AiLyricsJobState {
+        val state = OnDeviceAiLyricsManager.currentState()
+        val visibleSongId = currentSong()?.id
+        if (visibleSongId != null && OnDeviceAiLyricsManager.activeSong()?.id == visibleSongId) {
+            return state
+        }
+        if (visibleSongId != null &&
+            pendingAutomaticLyricsSong?.id == visibleSongId &&
+            state.isRunning
+        ) {
+            return AiLyricsJobState(
+                phase = AiJobPhase.SEARCHING_ONLINE,
+                progress = 0,
+                message = "Queued behind lyrics already being created on this phone."
+            )
+        }
+        return AiLyricsJobState()
+    }
+
+    private fun notifyAutomaticLyricsProgress(state: AiLyricsJobState) {
+        listeners.forEach { it.onAutomaticLyricsProgress(state) }
     }
 
     private fun applyLyricsResult(result: LyricsResult?) {

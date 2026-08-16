@@ -209,14 +209,30 @@ class NowPlayingActivity : AppCompatActivity(),
     }
 
     override fun onLyricsLoadStateChanged(state: LyricsLoadState) {
+        lyricsEntryIcon.setImageResource(
+            if (state == LyricsLoadState.SEARCHING) R.drawable.ic_auto_lyrics else R.drawable.ic_lyrics
+        )
         when (state) {
             LyricsLoadState.IDLE -> lyricsEntryPreview.setText(R.string.lyrics_choose_song)
             LyricsLoadState.SEARCHING -> lyricsEntryPreview.setText(R.string.lyrics_loading)
             LyricsLoadState.NOT_FOUND -> lyricsEntryPreview.setText(R.string.lyrics_not_found_open_center)
+            LyricsLoadState.SKIPPED_LONG_AUDIO -> {
+                lyricsEntryPreview.setText(R.string.lyrics_long_audio_skipped_short)
+            }
             LyricsLoadState.READY -> if (previewLyrics.isEmpty()) {
                 lyricsEntryPreview.setText(R.string.open_live_lyrics)
             }
         }
+    }
+
+    override fun onAutomaticLyricsProgress(state: AiLyricsJobState) {
+        if (!state.isRunning) return
+        lyricsEntryIcon.setImageResource(R.drawable.ic_auto_lyrics)
+        val progress = state.progress.coerceIn(0, 100)
+        lyricsEntryPreview.text = state.message
+            ?.takeIf(String::isNotBlank)
+            ?.let { message -> if (progress > 0) "$message  $progress%" else message }
+            ?: getString(R.string.lyrics_creating_automatically)
     }
 
     override fun onLyricsContentChanged(result: LyricsResult?) {

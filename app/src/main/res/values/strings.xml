@@ -57,8 +57,12 @@
     <string name="song_title_required">Enter a song title</string>
     <string name="song_renamed">Song renamed</string>
     <string name="lyrics_searching">Searching for synced lyrics…</string>
+    <string name="lyrics_creating_automatically">Creating synced lyrics automatically on this phone…</string>
     <string name="lyrics_ready">Synced lyrics ready</string>
     <string name="lyrics_not_found_retry">No synced lyrics found · Tap to retry</string>
+    <string name="lyrics_long_audio_skipped_short">Smart Lyrics skipped · Audio is over 8 minutes</string>
+    <string name="lyrics_long_audio_title">Long-form audio kept lightweight</string>
+    <string name="lyrics_long_audio_explanation">This audio is longer than 8 minutes, so Lyr treats it as possible story, podcast, lecture, or other long-form content. Smart Lyrics will not search online, identify, decode, or transcribe it. Only lyrics already saved on this phone or a same-folder LRC file can be shown.</string>
     <string name="lyrics_overlay_permission_needed">Floating lyrics disabled · Tap to allow</string>
     <string name="overlay_playback_permission_explanation">Music can play now, but Android needs one additional permission to show synchronized lyrics above other apps.</string>
     <string name="not_now">Not now</string>
@@ -103,7 +107,7 @@
     <string name="overlay_permission_description">Allow this once so synced lyrics can float above other apps.</string>
     <string name="open_overlay_permission">Allow floating lyrics</string>
     <string name="overlay_permission_granted">Floating lyrics permission granted</string>
-    <string name="preview_lyric">Your synced lyric appears like this</string>
+    <string name="preview_lyric">তোমার গানের কথা\nYour synced lyrics</string>
     <string name="font_size">Font size</string>
     <string name="font_size_value">%1$d sp</string>
     <string name="font_style">Font style</string>
