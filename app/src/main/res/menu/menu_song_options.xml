@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/action_play_now"
+        android:icon="@drawable/ic_play"
+        android:title="@string/play_song" />
+    <item
+        android:id="@+id/action_toggle_playback"
+        android:icon="@drawable/ic_pause"
+        android:title="@string/pause_playback" />
+    <item
+        android:id="@+id/action_play_next"
+        android:icon="@drawable/ic_playlist_add"
+        android:title="@string/play_next" />
+    <item
+        android:id="@+id/action_share_file"
+        android:icon="@drawable/ic_share"
+        android:title="@string/share_song" />
+    <item
+        android:id="@+id/action_share_telegram"
+        android:icon="@drawable/ic_share"
+        android:title="@string/share_via_telegram" />
+    <item
+        android:id="@+id/action_share_whatsapp"
+        android:icon="@drawable/ic_share"
+        android:title="@string/share_via_whatsapp" />
+    <item
+        android:id="@+id/action_share_lyrics"
+        android:icon="@drawable/ic_lyrics"
+        android:title="@string/share_lyrics" />
+    <item
+        android:id="@+id/action_rename"
+        android:icon="@drawable/ic_edit"
+        android:title="@string/rename_song" />
+    <item
+        android:id="@+id/action_song_info"
+        android:icon="@drawable/ic_info"
+        android:title="@string/song_info" />
+    <item
+        android:id="@+id/action_delete"
+        android:icon="@drawable/ic_delete"
+        android:title="@string/delete_song" />
+</menu>

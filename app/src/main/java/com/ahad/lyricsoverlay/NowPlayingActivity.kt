@@ -5,6 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.res.ColorStateList
+import android.content.IntentSender
+import android.text.InputType
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
@@ -15,6 +19,8 @@ import android.widget.ImageView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.ColorUtils
@@ -23,6 +29,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
 import com.google.android.material.card.MaterialCardView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.min
@@ -72,6 +79,24 @@ class NowPlayingActivity : AppCompatActivity(),
     private var previewLyrics: List<LrcLine> = emptyList()
     private var previewLineIndex = -1
     private var sleepTimerActive = false
+    private var currentSong: Song? = null
+    private var currentlyPlaying = false
+    private var currentLyricsText: String? = null
+    private var pendingDeleteSong: Song? = null
+
+    /** Receives the result of the system delete-confirmation dialog. */
+    private val deleteRequestLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val song = pendingDeleteSong
+        pendingDeleteSong = null
+        if (song == null) return@registerForActivityResult
+        if (result.resultCode == RESULT_OK && !SongActions.stillExists(this, song)) {
+            onSongDeleted(song)
+        } else {
+            Toast.makeText(this, R.string.song_delete_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -159,12 +184,16 @@ class NowPlayingActivity : AppCompatActivity(),
                 emptyState.visibility = View.VISIBLE
                 emptyState.setText(R.string.choose_song_from_library)
             }
+            currentSong = null
+            currentlyPlaying = false
             displayedSongId = null
             latestDurationMs = 0L
             updateTimeLabels(0L)
             return
         }
 
+        currentSong = song
+        currentlyPlaying = isPlaying
         playerContent.visibility = View.VISIBLE
         emptyState.visibility = View.GONE
         latestDurationMs = durationMs.coerceAtLeast(song.durationMs).coerceAtLeast(0L)
@@ -236,6 +265,10 @@ class NowPlayingActivity : AppCompatActivity(),
     }
 
     override fun onLyricsContentChanged(result: LyricsResult?) {
+        currentLyricsText = result?.rawLrc
+            ?.let(LrcParser::parse)
+            ?.joinToString("\n") { it.text }
+            ?.takeIf(String::isNotBlank)
         previewLyrics = result?.rawLrc?.let(LrcParser::parse).orEmpty()
         previewLineIndex = -1
         if (previewLyrics.isEmpty() && result != null) {
@@ -324,7 +357,7 @@ class NowPlayingActivity : AppCompatActivity(),
         queueCountText = findViewById(R.id.queueCountText)
         queueRecyclerView = findViewById(R.id.upNextRecyclerView)
         seekBar.max = SEEK_MAX
-        artworkLoader = MusicListAdapter(this, {}, {})
+        artworkLoader = MusicListAdapter(this, {}, { _, _ -> })
         artworkLoader.updateConfiguration(customization)
     }
 
@@ -346,6 +379,17 @@ class NowPlayingActivity : AppCompatActivity(),
         }
         findViewById<View>(R.id.showSleepTimerButton).setOnClickListener {
             SleepTimerDialog.show(this, playerService)
+        }
+        findViewById<View>(R.id.sharePlayingSongButton).setOnClickListener {
+            val song = currentSong
+            if (song == null) {
+                Toast.makeText(this, R.string.nothing_playing, Toast.LENGTH_SHORT).show()
+            } else {
+                SongActions.shareSongFile(this, song)
+            }
+        }
+        findViewById<View>(R.id.playerOptionsButton).setOnClickListener { anchor ->
+            showPlayerOptions(anchor)
         }
         lyricsEntryCard.setOnClickListener { openLyricsCenter() }
         attachLyricsSwipe(lyricsEntryCard)
@@ -621,6 +665,80 @@ class NowPlayingActivity : AppCompatActivity(),
 
     private fun dp(value: Float): Int =
         (value * resources.displayMetrics.density).toInt()
+
+    /** Music-player style overflow: share, pause/resume, rename, delete… */
+    private fun showPlayerOptions(anchor: View) {
+        val song = currentSong
+        if (song == null) {
+            Toast.makeText(this, R.string.nothing_playing, Toast.LENGTH_SHORT).show()
+            return
+        }
+        SongOptionsMenu.show(
+            activity = this,
+            anchor = anchor,
+            song = song,
+            isCurrent = true,
+            isPlaying = currentlyPlaying,
+            lyricsText = currentLyricsText,
+            onPlay = { playerService?.resumePlayback() },
+            onTogglePlayback = { playerService?.togglePlayPause() },
+            onPlayNext = { },
+            onRename = { showRenameDialog(song) },
+            onDelete = { startDelete(song) }
+        )
+    }
+
+    private fun showRenameDialog(song: Song) {
+        val titleInput = EditText(this).apply {
+            setText(song.title)
+            setSelection(text.length)
+            hint = getString(R.string.rename_song_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            maxLines = 2
+        }
+        val container = FrameLayout(this).apply {
+            setPadding(dp(24f), dp(8f), dp(24f), 0)
+            addView(titleInput)
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.rename_song)
+            .setMessage(R.string.rename_song_description)
+            .setView(container)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.save) { _, _ ->
+                val newTitle = titleInput.text?.toString()?.trim().orEmpty()
+                if (newTitle.isNotBlank()) {
+                    AppPreferences.setSongTitle(song.id, newTitle)
+                    Toast.makeText(this, R.string.song_renamed, Toast.LENGTH_SHORT).show()
+                }
+            }
+            .show()
+    }
+
+    /** Deletes the playing song, letting the OS show its own confirmation on Android 11+. */
+    private fun startDelete(song: Song) {
+        pendingDeleteSong = song
+        val result = SongActions.deleteSong(this, song) { sender: IntentSender ->
+            deleteRequestLauncher.launch(IntentSenderRequest.Builder(sender).build())
+        }
+        when (result) {
+            SongActions.DeleteResult.DELETED -> {
+                pendingDeleteSong = null
+                onSongDeleted(song)
+            }
+            SongActions.DeleteResult.PENDING_CONFIRMATION -> Unit
+            SongActions.DeleteResult.FAILED -> {
+                pendingDeleteSong = null
+                Toast.makeText(this, R.string.song_delete_failed, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun onSongDeleted(song: Song) {
+        Toast.makeText(this, R.string.song_deleted, Toast.LENGTH_SHORT).show()
+        playerService?.removeSongFromQueue(song.id)
+        if (playerService?.nowPlayingSong() == null) closePlayer()
+    }
 
     companion object {
         private const val SEEK_MAX = 1_000

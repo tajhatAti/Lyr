@@ -50,6 +50,15 @@
         </LinearLayout>
 
         <ImageButton
+            android:id="@+id/lyricsShareButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/share_lyrics"
+            android:padding="12dp"
+            android:src="@drawable/ic_share" />
+
+        <ImageButton
             android:id="@+id/lyricsTimerButton"
             android:layout_width="48dp"
             android:layout_height="48dp"

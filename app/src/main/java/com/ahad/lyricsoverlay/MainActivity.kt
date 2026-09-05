@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -23,6 +24,8 @@ import android.widget.ImageView
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.GridLayoutManager
@@ -58,6 +61,22 @@ class MainActivity : AppCompatActivity(),
     private lateinit var seekBar: SeekBar
 
     private val scannerExecutor = Executors.newSingleThreadExecutor()
+
+    private var pendingDeleteSong: Song? = null
+
+    /** Result of the system's delete-confirmation dialog for a library song. */
+    private val deleteRequestLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val song = pendingDeleteSong
+        pendingDeleteSong = null
+        if (song == null) return@registerForActivityResult
+        if (result.resultCode == RESULT_OK && !SongActions.stillExists(this, song)) {
+            onSongDeleted(song)
+        } else {
+            Toast.makeText(this, R.string.song_delete_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
     private val scannedSongs = mutableListOf<Song>()
     private val visibleSongs = mutableListOf<Song>()
     private var customization = AppPreferences.snapshot()
@@ -291,7 +310,7 @@ class MainActivity : AppCompatActivity(),
         adapter = MusicListAdapter(
             context = this,
             onSongClicked = ::playSong,
-            onSongLongClicked = ::showRenameSongDialog
+            onSongLongClicked = ::showSongOptions
         )
         recyclerView.adapter = adapter
         recyclerView.layoutManager = createLayoutManager(customization)
@@ -533,6 +552,64 @@ class MainActivity : AppCompatActivity(),
             if (isList) R.string.switch_to_grid else R.string.switch_to_list
         )
         layoutModeButton.imageTintList = android.content.res.ColorStateList.valueOf(customization.accentColor)
+    }
+
+    /** Long-pressing a library song opens the full music-player options menu. */
+    private fun showSongOptions(song: Song, anchor: View) {
+        val service = playerService
+        val isCurrent = service?.nowPlayingSong()?.id == song.id
+        SongOptionsMenu.show(
+            activity = this,
+            anchor = anchor,
+            song = song,
+            isCurrent = isCurrent,
+            isPlaying = isCurrent && service?.isPlaying() == true,
+            lyricsText = null,
+            onPlay = { playSong(song) },
+            onTogglePlayback = { service?.togglePlayPause() },
+            onPlayNext = {
+                if (service == null) {
+                    playSong(song)
+                } else {
+                    service.playNext(song)
+                    Toast.makeText(this, R.string.added_to_play_next, Toast.LENGTH_SHORT).show()
+                }
+            },
+            onRename = { showRenameSongDialog(song) },
+            onDelete = { startDelete(song) }
+        )
+    }
+
+    private fun startDelete(song: Song) {
+        pendingDeleteSong = song
+        val result = SongActions.deleteSong(this, song) { sender: IntentSender ->
+            deleteRequestLauncher.launch(IntentSenderRequest.Builder(sender).build())
+        }
+        when (result) {
+            SongActions.DeleteResult.DELETED -> {
+                pendingDeleteSong = null
+                onSongDeleted(song)
+            }
+            SongActions.DeleteResult.PENDING_CONFIRMATION -> Unit
+            SongActions.DeleteResult.FAILED -> {
+                pendingDeleteSong = null
+                Toast.makeText(this, R.string.song_delete_failed, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun onSongDeleted(song: Song) {
+        Toast.makeText(this, R.string.song_deleted, Toast.LENGTH_SHORT).show()
+        playerService?.removeSongFromQueue(song.id)
+        AppPreferences.clearSongTitle(song.id)
+        val index = scannedSongs.indexOfFirst { it.id == song.id }
+        if (index >= 0) {
+            scannedSongs.removeAt(index)
+            sortAndDisplaySongs(preserveAnchor = true)
+            updateLibrarySummary()
+        } else {
+            scanMusicLibrary(preserveAnchor = true)
+        }
     }
 
     private fun showRenameSongDialog(song: Song) {

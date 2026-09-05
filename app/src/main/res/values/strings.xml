@@ -272,4 +272,28 @@
     <string name="minutes_45">45 min</string>
     <string name="minutes_60">60 min</string>
     <string name="invalid_sleep_minutes">Enter 1 to 720 minutes.</string>
+
+    <!-- Song options: share, delete, playback -->
+    <string name="song_options">Song options</string>
+    <string name="more_options">More options</string>
+    <string name="share_song">Share song file</string>
+    <string name="share_song_via">Share song via</string>
+    <string name="share_via_telegram">Send to Telegram</string>
+    <string name="share_via_whatsapp">Send to WhatsApp</string>
+    <string name="share_lyrics">Share lyrics</string>
+    <string name="no_lyrics_to_share">No lyrics available to share yet.</string>
+    <string name="no_app_to_share">No app available to share this song.</string>
+    <string name="delete_song">Delete from device</string>
+    <string name="delete_song_title">Delete this song?</string>
+    <string name="delete_song_message">“%1$s” will be permanently removed from your device storage.</string>
+    <string name="delete">Delete</string>
+    <string name="song_deleted">Song deleted</string>
+    <string name="song_delete_failed">Could not delete this song.</string>
+    <string name="resume_playback">Resume</string>
+    <string name="pause_playback">Pause</string>
+    <string name="play_song">Play this song</string>
+    <string name="play_next">Play next</string>
+    <string name="added_to_play_next">Added to play next</string>
+    <string name="song_info">Song details</string>
+    <string name="song_info_body">Title: %1$s\nArtist: %2$s\nAlbum: %3$s\nFile: %4$s\nDuration: %5$s</string>
 </resources>

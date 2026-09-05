@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.TextView
@@ -25,7 +26,7 @@ import java.util.concurrent.Executors
 class MusicListAdapter(
     private val context: Context,
     private val onSongClicked: (Song) -> Unit,
-    private val onSongLongClicked: (Song) -> Unit
+    private val onSongLongClicked: (Song, View) -> Unit
 ) : RecyclerView.Adapter<MusicListAdapter.SongViewHolder>() {
 
     private val differ = AsyncListDiffer(this, SONG_DIFF)
@@ -190,7 +191,7 @@ class MusicListAdapter(
                 if (position == RecyclerView.NO_POSITION) {
                     false
                 } else {
-                    onSongLongClicked(songs[position])
+                    onSongLongClicked(songs[position], card)
                     true
                 }
             }

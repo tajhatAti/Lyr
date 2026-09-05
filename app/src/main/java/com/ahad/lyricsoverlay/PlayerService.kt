@@ -258,6 +258,62 @@ class PlayerService : Service(), OnDeviceAiLyricsManager.Listener {
 
     fun currentQueueIndex(): Int = currentIndex
 
+    /** The song currently loaded in the player, if any. */
+    fun nowPlayingSong(): Song? = currentSong()
+
+    /** Whether audio is actively playing right now. */
+    fun isPlaying(): Boolean = playing
+
+    /** Inserts [song] right after the current track without interrupting playback. */
+    fun playNext(song: Song) {
+        if (queue.isEmpty()) {
+            playSongs(listOf(song), 0)
+            return
+        }
+        val withoutSong = queue.toMutableList()
+        val existingIndex = withoutSong.indexOfFirst { it.id == song.id }
+        if (existingIndex >= 0) {
+            if (existingIndex == currentIndex) return
+            withoutSong.removeAt(existingIndex)
+            if (existingIndex < currentIndex) currentIndex--
+        }
+        val insertAt = (currentIndex + 1).coerceIn(0, withoutSong.size)
+        withoutSong.add(insertAt, song)
+        queue = withoutSong
+        publishQueue()
+    }
+
+    /**
+     * Drops a deleted song out of the queue. If it is the song being played the
+     * player advances to the next track (or stops when the queue empties).
+     */
+    fun removeSongFromQueue(songId: Long) {
+        val index = queue.indexOfFirst { it.id == songId }
+        if (index < 0) return
+
+        val wasCurrent = index == currentIndex
+        val updated = queue.toMutableList().also { it.removeAt(index) }
+
+        if (updated.isEmpty()) {
+            stopPlaybackAndService()
+            return
+        }
+
+        queue = updated
+        when {
+            wasCurrent -> {
+                val nextIndex = index.coerceAtMost(queue.lastIndex)
+                currentIndex = nextIndex
+                playAt(nextIndex)
+            }
+            index < currentIndex -> {
+                currentIndex--
+                publishQueue()
+            }
+            else -> publishQueue()
+        }
+    }
+
     fun isShuffleEnabled(): Boolean = shuffleEnabled
 
     fun currentRepeatMode(): PlayerRepeatMode = repeatMode

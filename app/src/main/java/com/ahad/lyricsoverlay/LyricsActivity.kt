@@ -398,6 +398,9 @@ class LyricsActivity : AppCompatActivity(),
 
     private fun setupControls() {
         findViewById<View>(R.id.lyricsBackButton).setOnClickListener { closeLyrics() }
+        findViewById<View>(R.id.lyricsShareButton).setOnClickListener { anchor ->
+            showShareOptions(anchor)
+        }
         timerButton.setOnClickListener { SleepTimerDialog.show(this, playerService) }
         fixTimingButton.setOnClickListener { showTimingCorrectionDialog() }
         findViewById<View>(R.id.retryAutomaticLyricsButton).setOnClickListener {
@@ -1274,6 +1277,36 @@ class LyricsActivity : AppCompatActivity(),
     override fun onBackPressed() = closeLyrics()
 
     private fun dp(value: Float): Int = (value * resources.displayMetrics.density).toInt()
+
+    /** Small sheet offering "share the song file" or "share the lyrics text". */
+    private fun showShareOptions(anchor: View) {
+        val song = currentSong
+        if (song == null) {
+            Toast.makeText(this, R.string.nothing_playing, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val plainLyrics = currentLines
+            .joinToString("\n") { it.text }
+            .takeIf(String::isNotBlank)
+
+        val popup = androidx.appcompat.widget.PopupMenu(this, anchor, android.view.Gravity.END)
+        popup.menu.add(0, 1, 0, R.string.share_song)
+        if (plainLyrics != null) popup.menu.add(0, 2, 1, R.string.share_lyrics)
+        SongActions.telegramPackage(this)?.let { popup.menu.add(0, 3, 2, R.string.share_via_telegram) }
+        SongActions.whatsAppPackage(this)?.let { popup.menu.add(0, 4, 3, R.string.share_via_whatsapp) }
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> SongActions.shareSongFile(this, song)
+                2 -> plainLyrics?.let { SongActions.shareLyricsText(this, song, it) }
+                3 -> SongActions.telegramPackage(this)
+                    ?.let { SongActions.shareSongFileTo(this, song, it) }
+                4 -> SongActions.whatsAppPackage(this)
+                    ?.let { SongActions.shareSongFileTo(this, song, it) }
+            }
+            true
+        }
+        popup.show()
+    }
 
     companion object {
         private const val TAB_LIVE = 0

@@ -66,6 +66,24 @@
                 </LinearLayout>
 
                 <ImageButton
+                    android:id="@+id/sharePlayingSongButton"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/share_song"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_share" />
+
+                <ImageButton
+                    android:id="@+id/playerOptionsButton"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="@string/more_options"
+                    android:padding="12dp"
+                    android:src="@drawable/ic_more_vert" />
+
+                <ImageButton
                     android:id="@+id/showSleepTimerButton"
                     android:layout_width="48dp"
                     android:layout_height="48dp"
